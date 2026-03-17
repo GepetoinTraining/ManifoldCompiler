@@ -56,15 +56,23 @@ function saveState(state) {
 // ════════════════════════════════════════════════════════════
 // COMPONENT
 // ════════════════════════════════════════════════════════════
+// ── Scan mode formats ──
+const SCAN_MODES = {
+  qr:      { label: 'QR Code',  icon: '⬡', formats: ['qr_code', 'data_matrix'] },
+  barcode: { label: 'Barcode',  icon: '⫼', formats: ['code_128', 'code_39', 'ean_13', 'ean_8'] },
+};
+
 export default function MMCompiler() {
   const [tab, setTab] = useState(0);
   const [state, setState] = useState(loadState);
   const [camActive, setCamActive] = useState(false);
   const [lastRead, setLastRead] = useState(null);
   const [manualInput, setManualInput] = useState('');
+  const [scanMode, setScanMode] = useState('qr');
   const videoRef = useRef(null);
   const scanRef = useRef({ last: '', time: 0 });
   const streamRef = useRef(null);
+  const loopRef = useRef(null);
 
   // ── Persist on change ──
   useEffect(() => { saveState(state); }, [state]);
@@ -83,21 +91,27 @@ export default function MMCompiler() {
       if (videoRef.current) videoRef.current.srcObject = stream;
       streamRef.current = stream;
       setCamActive(true);
-      startDetection();
+      startDetection(scanMode);
     } catch (e) {
       setCamActive(false);
     }
   }, []);
 
-  const startDetection = useCallback(() => {
+  const startDetection = useCallback((mode) => {
     if (!('BarcodeDetector' in window)) return;
+    // Cancel any previous detection loop
+    if (loopRef.current) { loopRef.current.cancelled = true; }
+    const ctx = { cancelled: false };
+    loopRef.current = ctx;
+
     const detector = new BarcodeDetector({
-      formats: ['qr_code', 'code_128', 'code_39', 'ean_13', 'ean_8', 'data_matrix']
+      formats: SCAN_MODES[mode || 'qr'].formats
     });
 
     const loop = () => {
-      if (!videoRef.current || !streamRef.current) return;
+      if (ctx.cancelled || !videoRef.current || !streamRef.current) return;
       detector.detect(videoRef.current).then(codes => {
+        if (ctx.cancelled) return;
         for (const c of codes) {
           const now = Date.now();
           if (c.rawValue === scanRef.current.last && now - scanRef.current.time < 2500) continue;
@@ -109,6 +123,13 @@ export default function MMCompiler() {
     };
     loop();
   }, []);
+
+  // ── Restart detection when scan mode changes ──
+  useEffect(() => {
+    if (tab === 0 && camActive) {
+      startDetection(scanMode);
+    }
+  }, [scanMode]);
 
   // ── SCAN HANDLER ──
   const handleScan = useCallback((raw) => {
@@ -239,16 +260,44 @@ export default function MMCompiler() {
         {/* ════════ TAB 0: SCANNER ════════ */}
         {tab === 0 && (
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+            {/* Scan mode selector */}
+            <div style={{
+              display: 'flex', gap: 4, padding: '8px 16px',
+              borderBottom: '1px solid #1a1a2e', background: '#0a0a0f'
+            }}>
+              {Object.entries(SCAN_MODES).map(([key, mode]) => (
+                <button
+                  key={key}
+                  onClick={() => setScanMode(key)}
+                  style={{
+                    flex: 1, padding: '7px 0', fontSize: 10, fontWeight: 600,
+                    fontFamily: 'inherit', letterSpacing: 1, cursor: 'pointer',
+                    textTransform: 'uppercase', borderRadius: 4, transition: 'all 0.2s ease',
+                    border: scanMode === key ? '1px solid #c9a84c' : '1px solid #1a1a2e',
+                    background: scanMode === key ? '#1a1510' : '#0c0c12',
+                    color: scanMode === key ? '#c9a84c' : '#555',
+                    boxShadow: scanMode === key ? '0 0 12px #c9a84c15' : 'none',
+                  }}
+                >
+                  {mode.icon} {mode.label}
+                </button>
+              ))}
+            </div>
+
             {/* Camera */}
             <div style={{ position: 'relative', background: '#000', flexShrink: 0 }}>
               <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', display: 'block', maxHeight: '40vh' }} />
               <div style={{
                 position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)',
-                width: 220, height: 90, border: '2px solid #c9a84c33', borderRadius: 6, pointerEvents: 'none',
-                boxShadow: '0 0 30px #c9a84c11'
+                width: scanMode === 'qr' ? 180 : 240, height: scanMode === 'qr' ? 180 : 90,
+                border: '2px solid #c9a84c33', borderRadius: 6, pointerEvents: 'none',
+                boxShadow: '0 0 30px #c9a84c11', transition: 'all 0.3s ease',
               }} />
               <div style={{ position: 'absolute', bottom: 8, left: 10, fontSize: 9, color: camActive ? '#4c8c5c' : '#8c4c4c', fontWeight: 600 }}>
                 {camActive ? '● camera active' : '○ no camera'}
+              </div>
+              <div style={{ position: 'absolute', bottom: 8, right: 10, fontSize: 8, color: '#444' }}>
+                {SCAN_MODES[scanMode].label} mode
               </div>
             </div>
 
