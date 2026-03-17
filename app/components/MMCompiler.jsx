@@ -1,11 +1,12 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { gcd, factorize, canAccept, PHI } from "@/lib/gate";
+import { gcd, factorize, canAccept, isPrime, PHI } from "@/lib/gate";
 import {
-  loadLoop, saveLoop, getGenerated, getUnconsumed, addPrime, multiplyValues,
-  appendScan, loadTensors, saveTensors, loadNodes, saveNodes,
-  loadPending, savePending, loadAudit, appendAudit, consumeValue, clearAll,
+  load, loadLoop, saveLoop, getGenerated, getUnconsumed, addPrime, multiplyValues,
+  generatePrimesUpTo, appendScan, isScanUsed, loadTensors, saveTensors,
+  loadNodes, saveNodes, loadAudit, appendAudit,
+  consumeValue, clearAll,
 } from "@/lib/storage";
 
 // ════════════════════════════════════════════════════════════
@@ -185,25 +186,56 @@ export default function MMCompiler() {
   // ══════════════════════════════════════════
   // SCAN HANDLER — routes by type through gate
   // ══════════════════════════════════════════
+  // Rules:
+  //   1. Each barcode is SINGLE USE — re-scans rejected
+  //   2. If the prime isn't in the ledger, AUTO-GENERATE primes up to it
+  //   3. Non-primes are rejected (isPrime check for raw numbers)
+  // ══════════════════════════════════════════
+
+  /**
+   * Ensure prime P exists in the ledger. If not, run the MM loop
+   * to generate all primes from 2..P, expanding composites at each step.
+   * Returns the updated loop.
+   */
+  const ensurePrime = (currentLoop, prime) => {
+    const generated = getGenerated(currentLoop);
+    if (generated.has(prime)) return { loop: currentLoop, generated: 0 };
+    const result = generatePrimesUpTo(currentLoop, prime, PHI2, isPrime);
+    return { loop: result.loop, generated: result.totalNew };
+  };
+
   const handleScan = useCallback((raw) => {
     const parsed = parse(raw);
     if (!parsed) {
       setLastResult({ action: 'REJECTED', reason: 'unparseable', raw: raw.slice(0, 100) });
       appendAudit({ action: 'REJECTED', raw: raw.slice(0, 100), reason: 'unparseable' });
-      appendScan(raw);
+      return;
+    }
+
+    // ── Single-use check (raw primes exempt — they're just numbers) ──
+    if (parsed.type !== '_prime' && isScanUsed(raw)) {
+      setLastResult({ action: 'REJECTED', reason: 'barcode already used', type: parsed.type, prime: parsed.prime });
+      appendAudit({ action: 'REJECTED_REUSE', raw: raw.slice(0, 80) });
       return;
     }
 
     appendScan(raw);
-    const currentLoop = loadLoop();
-    const generated = getGenerated(currentLoop);
+    let currentLoop = loadLoop();
 
     // ── Raw prime ──
     if (parsed.type === '_prime') {
-      const result = addPrime(currentLoop, parsed.prime, PHI2);
+      if (!isPrime(parsed.prime)) {
+        setLastResult({
+          action: 'REJECTED', type: 'not prime', prime: parsed.prime,
+          reason: `${parsed.prime} = ${factorize(parsed.prime).join('×')} — not prime`,
+        });
+        appendAudit({ action: 'REJECTED', prime: parsed.prime, reason: 'not prime' });
+        return;
+      }
+      const result = addPrime(currentLoop, parsed.prime, PHI2, 'scanned');
       if (result.alreadyExists) {
         setLastResult({ action: 'DUPLICATE', prime: parsed.prime });
-        appendAudit({ action: 'DUPLICATE', prime: parsed.prime, type: 'prime' });
+        appendAudit({ action: 'DUPLICATE', prime: parsed.prime });
         return;
       }
       setLoop(result.loop);
@@ -213,16 +245,22 @@ export default function MMCompiler() {
         newRows: result.newRows.length, factors: factorize(parsed.prime),
       });
       appendAudit({ action: 'PRIME_ADDED', prime: parsed.prime, composites: result.newRows.length - 1, bytes: parsed.bytes });
-      replayPending(result.loop);
       return;
     }
+
+    // ── Auto-generate primes up to the barcode's prime ──
+    const autoResult = ensurePrime(currentLoop, parsed.prime);
+    currentLoop = autoResult.loop;
+    if (autoResult.generated > 0) {
+      saveLoop(currentLoop);
+    }
+    const generated = getGenerated(currentLoop);
 
     // ── CSS tensor — exact prime required ──
     if (parsed.type === 'css') {
       if (!generated.has(parsed.prime)) {
-        addPendingBarcode(parsed.prime, raw);
-        setLastResult({ action: 'PENDING', type: 'css', prime: parsed.prime, reason: 'prime not generated' });
-        appendAudit({ action: 'PENDING', type: 'css', prime: parsed.prime, bytes: parsed.bytes });
+        setLastResult({ action: 'REJECTED', type: 'css', prime: parsed.prime, reason: `prime ${parsed.prime} unreachable` });
+        appendAudit({ action: 'REJECTED', type: 'css', prime: parsed.prime });
         return;
       }
       const tensors = loadTensors();
@@ -231,8 +269,11 @@ export default function MMCompiler() {
       const consumed = consumeValue(currentLoop, parsed.prime);
       setLoop(consumed);
       saveLoop(consumed);
-      setLastResult({ action: 'ACCEPTED', type: 'css', prime: parsed.prime, bytes: parsed.bytes });
-      appendAudit({ action: 'TENSOR_APPLIED', type: 'css', prime: parsed.prime, bytes: parsed.bytes });
+      setLastResult({
+        action: 'ACCEPTED', type: 'css', prime: parsed.prime,
+        bytes: parsed.bytes, autoGenerated: autoResult.generated,
+      });
+      appendAudit({ action: 'TENSOR_APPLIED', type: 'css', prime: parsed.prime, bytes: parsed.bytes, autoGenerated: autoResult.generated });
       return;
     }
 
@@ -240,9 +281,8 @@ export default function MMCompiler() {
     const contentTypes = ['h1', 'h2', 'h3', 'p', 'math', 'def', 'hr', 'meta'];
     if (contentTypes.includes(parsed.type)) {
       if (!canAccept(parsed.prime, generated)) {
-        addPendingBarcode(parsed.prime, raw);
-        setLastResult({ action: 'PENDING', type: parsed.type, prime: parsed.prime, reason: 'gate closed' });
-        appendAudit({ action: 'PENDING', type: parsed.type, prime: parsed.prime, bytes: parsed.bytes });
+        setLastResult({ action: 'REJECTED', type: parsed.type, prime: parsed.prime, reason: 'gate closed' });
+        appendAudit({ action: 'REJECTED', type: parsed.type, prime: parsed.prime });
         return;
       }
       const nodes = loadNodes();
@@ -252,52 +292,30 @@ export default function MMCompiler() {
         timestamp: new Date().toISOString(), bytes: parsed.bytes,
       });
       saveNodes(nodes);
-      setLastResult({ action: 'ACCEPTED', type: parsed.type, prime: parsed.prime, bytes: parsed.bytes, content: parsed.content.slice(0, 80) });
+      setLastResult({
+        action: 'ACCEPTED', type: parsed.type, prime: parsed.prime,
+        bytes: parsed.bytes, content: parsed.content.slice(0, 80),
+        autoGenerated: autoResult.generated,
+      });
       appendAudit({ action: 'CRYSTALLIZED', type: parsed.type, prime: parsed.prime, bytes: parsed.bytes });
       return;
     }
 
     // ── All other types (js, tp, tpb, op, q, lex, etc.) ──
     if (!canAccept(parsed.prime, generated)) {
-      addPendingBarcode(parsed.prime, raw);
-      setLastResult({ action: 'PENDING', type: parsed.type, prime: parsed.prime, reason: 'gate closed' });
-      appendAudit({ action: 'PENDING', type: parsed.type, prime: parsed.prime, bytes: parsed.bytes });
+      setLastResult({ action: 'REJECTED', type: parsed.type, prime: parsed.prime, reason: 'gate closed' });
+      appendAudit({ action: 'REJECTED', type: parsed.type, prime: parsed.prime });
       return;
     }
-    setLastResult({ action: 'ACCEPTED', type: parsed.type, prime: parsed.prime, bytes: parsed.bytes, content: parsed.content.slice(0, 60) });
+    setLastResult({
+      action: 'ACCEPTED', type: parsed.type, prime: parsed.prime,
+      bytes: parsed.bytes, content: parsed.content.slice(0, 60),
+      autoGenerated: autoResult.generated,
+    });
     appendAudit({ action: 'ACCEPTED', type: parsed.type, prime: parsed.prime, bytes: parsed.bytes });
   }, []);
 
-  function addPendingBarcode(prime, raw) {
-    const pending = loadPending();
-    if (!pending[prime]) pending[prime] = [];
-    pending[prime].push(raw);
-    savePending(pending);
-  }
 
-  function replayPending(currentLoop) {
-    const pending = loadPending();
-    const generated = getGenerated(currentLoop);
-    const newPending = {};
-
-    for (const [primeStr, barcodes] of Object.entries(pending)) {
-      const prime = parseInt(primeStr);
-      for (const barcode of barcodes) {
-        const parsed = parse(barcode);
-        if (!parsed) continue;
-        const passes = parsed.type === 'css'
-          ? generated.has(parsed.prime)
-          : canAccept(parsed.prime, generated);
-        if (passes) {
-          handleScan(barcode);
-        } else {
-          if (!newPending[prime]) newPending[prime] = [];
-          newPending[prime].push(barcode);
-        }
-      }
-    }
-    savePending(newPending);
-  }
 
   // ── Calculator ──
   const doMultiply = () => {
@@ -330,15 +348,13 @@ export default function MMCompiler() {
   const unconsumed = getUnconsumed(loop);
   const primes = loop.filter(r => r.type === 'prime');
   const composites = loop.filter(r => r.type === 'composite');
-  const pending = loadPending();
-  const pendingCount = Object.values(pending).flat().length;
   const tensors = loadTensors();
   const tensorCount = Object.keys(tensors).length;
   const nodes = loadNodes();
+  const scansUsed = typeof window !== 'undefined' ? (load('mm_scans') || []).length : 0;
 
   const resultColor = (action) =>
     action === 'ACCEPTED' || action === 'COMPOSITE' ? '#4c8c5c'
-    : action === 'PENDING' ? '#cc8800'
     : action === 'DUPLICATE' ? '#555'
     : '#8c4c4c';
 
@@ -395,18 +411,29 @@ export default function MMCompiler() {
               </div>
             ) : (
               <div style={{ padding: '16px 12px', background: '#0c0c12', borderBottom: '1px solid #1a1a2e', textAlign: 'center' }}>
-                <div style={{ fontSize: 9, color: '#555', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8 }}>raw number input</div>
-                <div style={{ display: 'flex', gap: 4, justifyContent: 'center', flexWrap: 'wrap' }}>
-                  {[2, 3, 5, 7, 11, 13, 17, 19, 23, 29].map(p => (
-                    <button key={p} onClick={() => handleScan(String(p))} style={{
-                      background: generated.has(p) ? '#1a2a1a' : '#1a1510',
-                      border: generated.has(p) ? '1px solid #2a3a2a' : '1px solid #4a3d1f',
-                      color: generated.has(p) ? '#4c8c5c' : '#c9a84c',
-                      fontFamily: 'inherit', fontSize: 12, fontWeight: 700,
-                      padding: '8px 12px', cursor: 'pointer', borderRadius: 4,
-                      minWidth: 44, transition: 'all 0.2s ease',
-                    }}>{p}{generated.has(p) ? ' ✓' : ''}</button>
-                  ))}
+                <div style={{ fontSize: 9, color: '#555', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8 }}>raw number input — type any prime</div>
+                <div style={{ display: 'flex', gap: 4, justifyContent: 'center', maxWidth: 320, margin: '0 auto' }}>
+                  <input
+                    type="number" min="2" placeholder="enter any prime…"
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && e.target.value) {
+                        handleScan(e.target.value.trim());
+                        e.target.value = '';
+                      }
+                    }}
+                    style={{
+                      flex: 1, background: '#0e0e14', border: '1px solid #1a1a2e', color: '#c9a84c',
+                      fontFamily: 'inherit', fontSize: 18, fontWeight: 700, padding: '10px 14px',
+                      outline: 'none', borderRadius: 4, textAlign: 'center',
+                    }}
+                  />
+                  <button onClick={e => {
+                    const inp = e.target.previousElementSibling;
+                    if (inp && inp.value) { handleScan(inp.value.trim()); inp.value = ''; }
+                  }} style={{ ...S.submitBtn, padding: '10px 16px', fontSize: 14 }}>→</button>
+                </div>
+                <div style={{ fontSize: 8, color: '#333', marginTop: 6 }}>
+                  {primes.length > 0 ? `${primes.length} primes in ledger: ${primes.map(r => r.value).join(', ')}` : 'no primes yet'}
                 </div>
               </div>
             )}
@@ -434,12 +461,13 @@ export default function MMCompiler() {
               {lastResult ? (
                 <div style={S.result}>
                   <div style={{ fontWeight: 700, color: resultColor(lastResult.action), letterSpacing: 1, marginBottom: 4 }}>
-                    {lastResult.action === 'ACCEPTED' ? '★' : lastResult.action === 'PENDING' ? '◌' : lastResult.action === 'COMPOSITE' ? '◆' : lastResult.action === 'DUPLICATE' ? '○' : '✗'} {lastResult.action}
+                    {lastResult.action === 'ACCEPTED' ? '★' : lastResult.action === 'COMPOSITE' ? '◆' : lastResult.action === 'DUPLICATE' ? '○' : '✗'} {lastResult.action}
                   </div>
                   {lastResult.type && <div>type: {lastResult.type}</div>}
                   {lastResult.prime && <div>prime: {lastResult.prime} = {factorize(lastResult.prime).join('×')}</div>}
                   {lastResult.product && <div>product: {lastResult.product} ({lastResult.origin})</div>}
                   {lastResult.newRows && <div style={{ color: '#4c8c5c' }}>+{lastResult.newRows} values generated</div>}
+                  {lastResult.autoGenerated > 0 && <div style={{ color: '#4c8c5c' }}>MM loop: +{lastResult.autoGenerated} auto-generated rows</div>}
                   {lastResult.bytes && <div style={{ color: '#444' }}>{lastResult.bytes} bytes</div>}
                   {lastResult.content && <div style={{ color: '#666', wordBreak: 'break-all', marginTop: 4 }}>{lastResult.content}</div>}
                   {lastResult.reason && <div style={{ color: '#8c4c4c' }}>{lastResult.reason}</div>}
@@ -471,7 +499,7 @@ export default function MMCompiler() {
                   <div style={{ fontSize: 9, color: '#333', marginTop: 8 }}>
                     {tensorCount > 0 ? `${tensorCount} tensor${tensorCount > 1 ? 's' : ''} active` : 'no tensors loaded'}
                     {' · '}{primes.length > 0 ? `${primes.length} primes` : 'no primes'}
-                    {pendingCount > 0 ? ` · ${pendingCount} pending` : ''}
+                    {scansUsed > 0 ? ` · ${scansUsed} scanned` : ''}
                   </div>
                 </div>
               ) : (
@@ -512,8 +540,7 @@ export default function MMCompiler() {
               <div style={S.sectionTitle}>mm_loop</div>
               <div>{loop.length} rows · {primes.length} primes · {composites.length} composites</div>
               <div>Generated set: {generated.size} values · Tensors: {tensorCount} · Nodes: {nodes.length}</div>
-              <div>Unconsumed: {unconsumed.length}</div>
-              {pendingCount > 0 && <div style={{ color: '#cc8800' }}>Pending: {pendingCount} barcodes waiting</div>}
+              <div>Unconsumed: {unconsumed.length} · Barcodes used: {scansUsed}</div>
               <div style={{ fontSize: 9, color: '#555', marginTop: 6, borderTop: '1px solid #1a1a2e', paddingTop: 6 }}>
                 compiler bytes added: <span style={{ color: '#4c8c5c', fontWeight: 700, fontSize: 13 }}>0</span>
               </div>
@@ -566,17 +593,6 @@ export default function MMCompiler() {
               </div>
             )}
 
-            {/* Pending queue */}
-            {pendingCount > 0 && (
-              <div style={{ ...S.section, marginTop: 12 }}>
-                <div style={S.sectionTitle}>Pending ({pendingCount})</div>
-                {Object.entries(pending).map(([prime, barcodes]) => (
-                  <div key={prime} style={{ padding: '3px 0', color: '#cc8800', fontSize: 10 }}>
-                    P{prime}: {barcodes.length} barcode{barcodes.length > 1 ? 's' : ''} — {barcodes.map(b => b.slice(0, 30)).join(', ')}
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
         )}
       </div>
