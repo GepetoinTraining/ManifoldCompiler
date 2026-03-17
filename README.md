@@ -1,143 +1,81 @@
-# MM Compiler Verifier
+# MM Compiler
 
-**Proves it adds nothing.**
+**A compiler that adds zero bytes.** Everything is earned through barcodes.
 
-A transparency tool that scans QR codes and barcodes, crystallizes their content into a readable page, and maintains an immutable audit trail proving that exactly **zero bytes** were injected, modified, or fabricated by this application.
+## What It Does
 
----
+The MM Compiler scans QR codes and barcodes, routes them through a mathematical gate function (`canAccept`), and crystallizes their content into a page. The compiler itself adds nothing — no CSS, no content, no fonts. Everything arrives through physical barcode scans.
 
-## What Is This?
+## Architecture
 
-The MM Compiler Verifier is a web-based barcode scanner with a single purpose: **to prove that it doesn't cheat**.
+The entire application has **one piece of hardcoded logic**:
 
-Every byte displayed on the "Page" tab came from a physical barcode scan. Nothing was generated. Nothing was hardcoded. Nothing was fetched from a server. The audit trail tracks every scan event with byte counts, timestamps, and prime factorizations.
-
-## How It Works
-
-### Three Tabs, Three Guarantees
-
-| Tab | Name | Purpose |
-|-----|------|---------|
-| ① | **Scan** | Camera reads QR/barcodes using the native BarcodeDetector API |
-| ② | **Page** | Renders crystallized content — only what was scanned |
-| ③ | **Audit** | Shows every scan event with byte counts and the proof that 0 bytes were added |
-
-### Barcode Protocol
-
-Barcodes must follow the format:
-
-```
-type:prime:content
+```javascript
+function canAccept(prime, generated) {
+  if (generated.has(prime)) return true;
+  for (const existing of generated) {
+    if (gcd(prime, existing) > 1) return true;
+  }
+  return false;
+}
 ```
 
-| Field | Description | Example |
-|-------|-------------|---------|
-| `type` | HTML element type | `h1`, `p`, `math`, `def`, `css` |
-| `prime` | Unique prime identifier | `7`, `13`, `97` |
-| `content` | The actual content | `Hello World` |
+Everything else — styling, content, database tables, even the lexicon — must pass through this gate via barcode scans.
 
-**Example barcode content:** `h1:7:The Title of My Document`
+## The Ledger (`mm_loop`)
 
-### Data Flow
+| Column | Type | Description |
+|--------|------|-------------|
+| value | number | The number itself |
+| type | string | 'prime' \| 'composite' |
+| origin | string | How it arrived ("scanned", "2×3") |
+| cost | number | φ² ≈ 2.618 for primes, 0 for composites |
+| tick | number | Generation order |
+| consumed | boolean | Used by a barcode yet? |
 
-```
-📷 Camera → BarcodeDetector API → parse() → handleScan() → state[] → Render
-```
+## Tabs
 
-At **no point** in this pipeline is content generated, modified, or injected.
+| Tab | Purpose |
+|-----|---------|
+| ① Scan | Camera (QR/Barcode) or Raw Number input. Manual barcode string entry. Calculator. |
+| ② Page | Earned content zone. Renders nodes + injects CSS tensors. Starts empty. |
+| ③ Studio | Database visualizer. Shows mm_loop ledger, tensors, pending queue. |
 
----
+## Barcode Protocol
 
-## The 6 Guarantees
+Format: `type:prime:content`
 
-1. **No Network Requests** — Zero `fetch()`, zero `XMLHttpRequest`, zero `WebSocket`. The app never contacts any server.
-2. **No Dynamic Execution** — Zero `eval()`, zero `new Function()`. No code is generated at runtime.
-3. **Pure Parser** — `parse()` is a string splitter. It finds colons and extracts substrings. That's it.
-4. **Append-Only State** — `handleScan()` only appends to arrays. No mutation of existing data.
-5. **Render = State** — Tab ② displays exactly `state.nodes[]`. No hardcoded text.
-6. **Byte-Accurate Audit** — Tab ③ shows "Compiler bytes added: **0**". This is a literal `0`, not a variable.
+| Type | Gate | Effect |
+|------|------|--------|
+| *(number)* | Always | Adds prime to ledger |
+| `css` | Exact match | Injects `<style>` tag |
+| `h1,h2,h3,p` | canAccept | Content node |
+| `math,def,hr` | canAccept | Special content |
+| `meta` | canAccept | Sets page title |
+| `js` | canAccept | Stored (earned execution) |
+| `tp,tpb,op,q` | canAccept | DB operations |
+| `lex` | canAccept | Lexicon |
 
----
+## Boot Sequence
 
-## Tech Stack
+1. **Scan primes** (2, 3, 5, 7, ...) → builds the ledger
+2. **Scan CSS tensors** → the app becomes beautiful
+3. **Scan content** → the paper materializes
+4. **Scan JS** → database engine arrives
+5. **Scan lexicon** → the app speaks
 
-| Dependency | Purpose |
-|-----------|---------|
-| **Next.js 14** | Page routing and build tooling |
-| **React 18** | Component rendering and state management |
-| **BarcodeDetector** | Native browser API for QR/barcode reading (no library) |
-| **localStorage** | Local-only data persistence (no server) |
-
-**Zero external scanning libraries. Zero analytics. Zero telemetry.**
-
----
-
-## Deploy to Vercel
-
-### Option 1: Push to GitHub
-
-1. Push this repository to GitHub
-2. Go to [vercel.com](https://vercel.com) and import the repo
-3. Click **Deploy** — no configuration needed
-
-### Option 2: CLI
-
-```bash
-npm install -g vercel
-vercel
-```
-
-### Option 3: Direct
-
-```bash
-npx -y vercel
-```
-
----
-
-## Run Locally
+## Development
 
 ```bash
 npm install
-npm run dev
+npm run dev    # http://localhost:3000
+npm run build  # production build
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+## Deployment
+
+Deploy to Vercel — zero config, zero environment variables needed. All state lives in `localStorage`.
 
 ---
 
-## Verify It Yourself
-
-1. Open **DevTools** (F12)
-2. Go to **Sources** tab → search the bundle for `fetch`, `XMLHttpRequest`, `eval`, `WebSocket`
-3. Find **zero matches** in application code
-4. Go to **Network** tab → scan a barcode → see **zero external requests**
-5. Go to **Application → Local Storage** → find your data under the key `mm_compiler`
-6. Visit **/about** for a full section-by-section code breakdown
-
----
-
-## Project Structure
-
-```
-ManifoldCompiler/
-├── app/
-│   ├── layout.jsx            # Root layout with nav + SEO metadata
-│   ├── page.jsx              # Main page (renders MMCompiler)
-│   ├── globals.css           # Global dark theme styles
-│   ├── components/
-│   │   └── MMCompiler.jsx    # The verifier component (scan + render + audit)
-│   └── about/
-│       └── page.jsx          # Code transparency breakdown page
-├── mm_compiler.jsx           # Original source (preserved)
-├── package.json              # Dependencies: next, react, react-dom
-├── next.config.mjs           # Minimal Next.js config (empty)
-├── jsconfig.json             # Path aliases
-└── README.md                 # This file
-```
-
----
-
-## License
-
-Open source. Read the code. Verify the guarantees. Trust nothing but the source.
+*The compiler adds zero bytes. Zero bytes of content. Zero bytes of styling. It only knows how to accept or reject. Everything else is earned.*
