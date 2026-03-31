@@ -27,30 +27,44 @@ export async function POST(request) {
   const port = process.env.KERNEL_PORT || '3141';
 
   try {
-    // First: try to find by computed uuid
+    // Try kernel first
     console.log(`[login] wake check: http://${ip}:${port}/api/wake?uuid=${uuid}`);
-    const resp = await fetch(`http://${ip}:${port}/api/wake?uuid=${uuid}`);
-    const result = await resp.json();
+    try {
+      const resp = await fetch(`http://${ip}:${port}/api/wake?uuid=${uuid}`);
+      const result = await resp.json();
 
-    if (result.O && result.O.tokens_estimate) {
-      const response = NextResponse.json({ uuid, authenticated: true });
+      if (result.O && result.O.tokens_estimate) {
+        const response = NextResponse.json({ uuid, authenticated: true });
+        response.cookies.set('torus_uuid', uuid, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: 'lax',
+          maxAge: 60 * 60 * 24 * 365,
+        });
+        return response;
+      }
+
+      // Check if email maps to an existing user
+      const emailResp = await fetch(`http://${ip}:${port}/api/auth/lookup?email=${encodeURIComponent(email)}`);
+      const emailResult = await emailResp.json();
+
+      if (emailResult.O && emailResult.O.uuid) {
+        const existingUuid = emailResult.O.uuid;
+        const response = NextResponse.json({ uuid: existingUuid, authenticated: true });
+        response.cookies.set('torus_uuid', existingUuid, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: 'lax',
+          maxAge: 60 * 60 * 24 * 365,
+        });
+        return response;
+      }
+    } catch (kernelErr) {
+      // Kernel unreachable — accept the uuid from hash
+      // The client-side Klein bottle will work offline
+      console.log(`[login] kernel unavailable, accepting hash uuid: ${kernelErr.message}`);
+      const response = NextResponse.json({ uuid, authenticated: true, offline: true });
       response.cookies.set('torus_uuid', uuid, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
-        maxAge: 60 * 60 * 24 * 365,
-      });
-      return response;
-    }
-
-    // Second: check if email maps to an existing user (e.g. Pedro's soul-seed-1)
-    const emailResp = await fetch(`http://${ip}:${port}/api/auth/lookup?email=${encodeURIComponent(email)}`);
-    const emailResult = await emailResp.json();
-
-    if (emailResult.O && emailResult.O.uuid) {
-      const existingUuid = emailResult.O.uuid;
-      const response = NextResponse.json({ uuid: existingUuid, authenticated: true });
-      response.cookies.set('torus_uuid', existingUuid, {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
         sameSite: 'lax',

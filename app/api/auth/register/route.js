@@ -43,12 +43,21 @@ export async function POST(request) {
   const hash = await crypto.subtle.digest('SHA-256', data);
   const uuid = Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
 
-  // Store user (proxy to kernel)
+  // Store user — try kernel first, fall back to local-only
+  // The kernel picks up the user later via Turso sync
   try {
-    const result = await kernelRequest('/api/register', { uuid, name, email, profession });
+    let kernelResult = {};
+    try {
+      kernelResult = await kernelRequest('/api/register', { uuid, name, email, profession });
+      console.log(`[register] kernel accepted: uuid=${uuid}`);
+    } catch (kernelErr) {
+      // Kernel unreachable (e.g., Vercel can't reach ecos1) — that's fine
+      // User gets their uuid now, kernel discovers them on next Turso sync
+      console.log(`[register] kernel unavailable, local-only registration: ${kernelErr.message}`);
+    }
 
     // Set cookie with uuid
-    const response = NextResponse.json({ uuid, name, ...result });
+    const response = NextResponse.json({ uuid, name, ...kernelResult });
     response.cookies.set('torus_uuid', uuid, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
