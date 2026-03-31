@@ -88,7 +88,13 @@ export default function SynapsesPage() {
   useEffect(() => {
     if (!uuid) return;
     openTranslateDB()
-      .then((db) => setLocalDB(db))
+      .then((db) => {
+        setLocalDB(db);
+        // Resume tick from highest existing entry to avoid overwrites
+        const tx = db.transaction('surface', 'readonly');
+        const req = tx.objectStore('surface').count();
+        req.onsuccess = () => setLocalTick(req.result || 0);
+      })
       .catch((err) => console.error('[klein] DB open failed:', err));
   }, [uuid]);
 

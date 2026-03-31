@@ -63,7 +63,12 @@ export default function WorkspacePage() {
     if (stored) {
       setUuid(stored);
       openTranslateDB()
-        .then((db) => setLocalDB(db))
+        .then((db) => {
+          setLocalDB(db);
+          const tx = db.transaction('surface', 'readonly');
+          const req = tx.objectStore('surface').count();
+          req.onsuccess = () => setLocalTick(req.result || 0);
+        })
         .catch((err) => console.error('[klein] DB open failed:', err));
     } else {
       window.location.href = "/synapses";
