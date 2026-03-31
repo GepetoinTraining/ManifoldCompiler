@@ -66,8 +66,9 @@ export default function TeamsPanel({ uuid }) {
 
   useEffect(() => {
     if (!uuid) return;
+    // Teams come from Turso (via big kernel sync) — graceful if unavailable
     fetch(`/api/proxy/team/list?uuid=${uuid}`)
-      .then((r) => r.json())
+      .then((r) => r.ok ? r.json() : { O: [] })
       .then((data) => {
         if (data.O && Array.isArray(data.O)) setTeams(data.O);
       })

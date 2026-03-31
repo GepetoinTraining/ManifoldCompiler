@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { kernelWake, kernelTurn, parseSchema, PRIME_COLORS, vToColor } from '../../lib/kernel';
+import { parseSchema, PRIME_COLORS, vToColor } from '../../lib/kernel';
 import { openTranslateDB, ingest, composeContext } from '../../lib/translate';
 import LoginGate from './login';
 import TeamsPanel from './teams';
@@ -73,23 +73,22 @@ export default function SynapsesPage() {
       .catch((err) => console.error('[klein] DB open failed:', err));
   }, [uuid]);
 
-  // Wake the kernel once authenticated
+  // Build initial context from local Klein bottle
   useEffect(() => {
-    if (!uuid) return;
-    kernelWake(uuid)
-      .then((data) => {
-        setSchema(data);
-        if (data.schema) {
-          const parsed = parseSchema(data.schema);
+    if (!uuid || !localDB) return;
+    composeContext(localDB, currentV, uuid)
+      .then((ctx) => {
+        if (ctx) {
+          const fullSchema = 'flowchart TD\n' + ctx + '\n  classDef shadow fill:#333,color:#999,stroke:#555';
+          setSchema({ schema: fullSchema });
+          const parsed = parseSchema(fullSchema);
           setNodes(parsed);
         }
-        if (data.v) setCurrentV(data.v);
-        if (data.register) setRegister(data.register);
       })
       .catch((err) => {
-        setError(`Kernel unreachable: ${err.message}`);
+        console.error('[wake] local context failed:', err);
       });
-  }, [uuid]);
+  }, [uuid, localDB]);
 
   // Auto-scroll conversation
   useEffect(() => {
@@ -109,54 +108,30 @@ export default function SynapsesPage() {
     setTurns((prev) => [...prev, { role: 'user', text: userMessage }]);
 
     try {
-      // Step 0: Decompose into local Klein bottle — BEFORE anything else
-      // This classifies every word, assigns prime addresses, stores on surface
+      // Step 1: Decompose into local Klein bottle
       let localV = currentV;
-      let localContext = '';
+      let currentSchema = '';
       if (localDB) {
         const ingested = await ingest(userMessage, localDB, localTick, 'user');
         setLocalTick(prev => prev + 1);
         localV = ingested.v;
-        localContext = await composeContext(localDB, ingested.v, uuid);
-      }
+        setCurrentV(localV);
 
-      // Step 1: Tell the kernel about the user message (async state update)
-      // This updates flywheels, lattice, V(t), gears — returns enriched schema
-      const kernelState = await kernelTurn(uuid, userMessage);
+        // Determine register from dominant prime
+        const dominant = localV.indexOf(Math.max(...localV));
+        const registers = ['grounded', 'explorative', 'hedged', 'emphatic'];
+        setRegister(registers[dominant]);
 
-      // Extract kernel state — local Klein surface nests inside kernel schema
-      const kernelSchema = kernelState?.schema || schema?.schema || '';
-      let currentSchema = kernelSchema;
-      if (localContext) {
-        // Insert local subgraph before classDef/style lines (end of schema)
-        const classDefIdx = kernelSchema.indexOf('  classDef');
-        if (classDefIdx > 0) {
-          currentSchema = kernelSchema.slice(0, classDefIdx)
-            + localContext + '\n'
-            + '  KLEIN_' + uuid.slice(0, 8) + ' -->|feeds| VOICE\n'
-            + kernelSchema.slice(classDefIdx);
-        } else {
-          // No classDef — append with edge to VOICE if it exists
-          currentSchema = kernelSchema + '\n' + localContext
-            + (kernelSchema.includes('VOICE') ? '\n  KLEIN_' + uuid.slice(0, 8) + ' -->|feeds| VOICE' : '');
-        }
-      }
-      const gearNotes = (kernelState?.gear_contributions || []).map(g => g.note);
-      const v = kernelState?.v || kernelState?.voice_state?.v || currentV;
-      const reg = kernelState?.register || kernelState?.voice_state?.register || register;
-      const tens = kernelState?.tension ?? kernelState?.voice_state?.tension ?? tension;
+        // Build schema from local surface
+        const ctx = await composeContext(localDB, localV, uuid);
+        currentSchema = 'flowchart TD\n' + ctx + '\n  classDef shadow fill:#333,color:#999,stroke:#555';
 
-      setCurrentV(v);
-      setRegister(reg);
-      setTension(tens);
-
-      if (kernelState?.schema) {
-        const parsed = parseSchema(typeof kernelState.schema === 'string' ? kernelState.schema : '');
+        // Update landscape
+        const parsed = parseSchema(currentSchema);
         if (parsed.length > 0) setNodes(parsed);
       }
 
-      // Step 2: Call the LLM with the schema as system prompt
-      // The schema IS the context. Computed by the kernel. Served to the model.
+      // Step 2: Call the LLM — schema comes from tiny kernel, not server
       const chatResponse = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -166,7 +141,6 @@ export default function SynapsesPage() {
           history: turns.map(t => ({ role: t.role === 'user' ? 'user' : 'assistant', text: t.text })),
           model_tier: 'sonnet',
           uuid,
-          gear_notes: gearNotes,
         }),
       });
 
@@ -180,33 +154,15 @@ export default function SynapsesPage() {
 
       const modelResponse = chatData.response || '';
 
-      // Step 2.5: Ingest model response into local surface too
-      // The AI's words grow the same Klein bottle — tagged as synapse voice
+      // Step 3: Ingest model response into local surface — synapse voice
       if (localDB && modelResponse) {
-        await ingest(modelResponse, localDB, localTick, 'synapse');
+        const modelIngested = await ingest(modelResponse, localDB, localTick, 'synapse');
         setLocalTick(prev => prev + 1);
+
+        // Update V(t) with blended voice
+        const blended = localV.map((v, i) => (v + modelIngested.v[i]) / 2);
+        setCurrentV(blended);
       }
-
-      // Step 3: Tell the kernel about the model's response (async enrichment)
-      // This parses <imagine> tags, enriches schema, updates surfaces
-      const enrichment = await kernelTurn(uuid, null, modelResponse);
-
-      // Extract post-enrichment state
-      const postV = enrichment?.v || enrichment?.voice?.v || v;
-      const postReg = enrichment?.register || enrichment?.voice?.register || reg;
-      const imagination = enrichment?.imagination?.spawned || [];
-      const responseConcepts = enrichment?.concepts || [];
-
-      setCurrentV(postV);
-      setRegister(postReg);
-
-      if (enrichment?.schema) {
-        const parsed = parseSchema(typeof enrichment.schema === 'string' ? enrichment.schema : '');
-        if (parsed.length > 0) setNodes(parsed);
-      }
-
-      // Extract programs from enrichment
-      const programs = enrichment?.programs?.defined || [];
 
       // Add assistant turn
       setTurns((prev) => [
@@ -214,12 +170,8 @@ export default function SynapsesPage() {
         {
           role: 'assistant',
           text: modelResponse,
-          v: [...postV],
-          register: postReg,
-          tension: tens,
-          concepts: responseConcepts,
-          imagination,
-          programs,
+          v: [...localV],
+          register,
           model: chatData.model,
           tokens: chatData.usage,
         },
@@ -230,9 +182,25 @@ export default function SynapsesPage() {
         const convKey = `torus_conv_${uuid}_active`;
         const stored = JSON.parse(localStorage.getItem(convKey) || '[]');
         stored.push({ role: 'user', text: userMessage, ts: Date.now() });
-        stored.push({ role: 'assistant', text: modelResponse, v: postV, ts: Date.now() });
-        localStorage.setItem(convKey, JSON.stringify(stored.slice(-100))); // keep last 100 turns
+        stored.push({ role: 'assistant', text: modelResponse, v: localV, ts: Date.now() });
+        localStorage.setItem(convKey, JSON.stringify(stored.slice(-100)));
       } catch {} // localStorage might be full
+
+      // Silent background sync to Turso — user never sees this
+      if (localDB) {
+        import('../../lib/klein').then(({ getUnsynced, markSynced }) => {
+          getUnsynced(localDB).then(unsynced => {
+            if (unsynced.length === 0) return;
+            fetch('/api/sync', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ uuid, entries: unsynced, sinceTick: localTick - 2 }),
+            }).then(r => r.json()).then(result => {
+              if (result.pushed > 0) markSynced(localDB, unsynced.map(e => e.tick));
+            }).catch(() => {}); // sync failure is silent
+          });
+        });
+      }
 
     } catch (err) {
       setError(`Turn failed: ${err.message}`);

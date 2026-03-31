@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
-import { kernelTurn, parseSchema, PRIME_COLORS, vToColor } from "../../../lib/kernel";
+import { parseSchema, PRIME_COLORS, vToColor } from "../../../lib/kernel";
 import { renderNode, renderEdge, renderGoal, tickRotation, getRotation } from "../../../lib/space";
 import { lensLabel, lensCompositeLabel, lensFromFocus } from "../../../lib/lens";
 import { openTranslateDB, ingest, composeContext } from "../../../lib/translate";
@@ -59,33 +59,28 @@ export default function WorkspacePage() {
   useEffect(() => {
     if (!uuid || !teamId) return;
 
-    fetch(`/api/proxy/team/schema?team_id=${teamId}&uuid=${uuid}`)
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.O) {
-          const d = data.O;
-          setTeam(d.team);
-          setMembers(d.team?.members ? [] : []);
+    // Team data comes from Turso via big kernel enrichment (future)
+    // For now, use team_id as the workspace name
+    setTeam({ name: `Team ${teamId}` });
 
-          // Parse schema to nodes
-          if (d.schema) {
-            const parsed = parseSchema(d.schema);
+    // Build initial context from local Klein bottle
+    if (localDB) {
+      composeContext(localDB, currentV, uuid)
+        .then((ctx) => {
+          if (ctx) {
+            const fullSchema = 'flowchart TD\n' + ctx + '\n  classDef shadow fill:#333,color:#999,stroke:#555';
+            const parsed = parseSchema(fullSchema);
             const enriched = parsed.map((n) => {
-              const weight = parseFloat(n.label.match(/w=([\d.]+)/)?.[1] || "1");
+              const weight = parseFloat(n.label.match(/w=([\d.]+)/)?.[1] || n.label.match(/x(\d+)/)?.[1] || "1");
               const factors = factorsFromWeight(weight);
               return { ...n, weight, prime_factors: factors };
             });
-            setNodes(enriched);
+            if (enriched.length > 0) setNodes(enriched);
           }
-
-          // Set lens from L7 focus
-          if (d.team?.focus) {
-            setLens(lensFromFocus(d.team.focus));
-          }
-        }
-      })
-      .catch((e) => setError(e.message));
-  }, [uuid, teamId]);
+        })
+        .catch((e) => setError(e.message));
+    }
+  }, [uuid, teamId, localDB]);
 
   // Auto-scroll conversation
   useEffect(() => {
@@ -115,26 +110,31 @@ export default function WorkspacePage() {
     setTurns((prev) => [...prev, { role: "user", text: userMessage }]);
 
     try {
-      // Step 0: Decompose into local Klein bottle — user voice
+      // Step 1: Decompose into local Klein bottle — user voice
+      let localV = currentV;
+      let schema = '';
       if (localDB) {
-        await ingest(userMessage, localDB, localTick, 'user');
+        const ingested = await ingest(userMessage, localDB, localTick, 'user');
         setLocalTick(prev => prev + 1);
+        localV = ingested.v;
+        setCurrentV(localV);
+
+        const dominant = localV.indexOf(Math.max(...localV));
+        setRegister(['grounded', 'explorative', 'hedged', 'emphatic'][dominant]);
+
+        // Build schema from local surface
+        const ctx = await composeContext(localDB, localV, uuid);
+        schema = 'flowchart TD\n' + ctx + '\n  classDef shadow fill:#333,color:#999,stroke:#555';
+
+        const parsed = parseSchema(schema);
+        const enrichedNodes = parsed.map((n) => {
+          const weight = parseFloat(n.label.match(/w=([\d.]+)/)?.[1] || n.label.match(/x(\d+)/)?.[1] || "1");
+          return { ...n, weight, prime_factors: factorsFromWeight(weight) };
+        });
+        if (enrichedNodes.length > 0) setNodes(enrichedNodes);
       }
 
-      // Step 1: kernel state update
-      const kernelState = await kernelTurn(uuid, userMessage);
-      const kernelSchema = kernelState?.schema || "";
-
-      // Compose local context and nest into kernel schema
-      let schema = kernelSchema;
-      if (localDB) {
-        const localCtx = await composeContext(localDB, currentV, uuid);
-        if (localCtx) {
-          schema = kernelSchema + '\n' + localCtx;
-        }
-      }
-
-      // Step 2: call LLM
+      // Step 2: Call LLM — schema from tiny kernel
       const chatRes = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -159,29 +159,10 @@ export default function WorkspacePage() {
 
       const modelResponse = chatData.response || "";
 
-      // Step 2.5: Ingest model response — synapse voice on same Klein bottle
+      // Step 3: Ingest model response — synapse voice
       if (localDB && modelResponse) {
         await ingest(modelResponse, localDB, localTick, 'synapse');
         setLocalTick(prev => prev + 1);
-      }
-
-      // Step 3: kernel enrichment
-      const enrichment = await kernelTurn(uuid, null, modelResponse);
-
-      // Update V(t)
-      const v = enrichment?.v || enrichment?.voice?.v || currentV;
-      const reg = enrichment?.register || enrichment?.voice?.register || register;
-      setCurrentV(v);
-      setRegister(reg);
-
-      // Update nodes from enriched schema
-      if (enrichment?.schema) {
-        const parsed = parseSchema(typeof enrichment.schema === "string" ? enrichment.schema : "");
-        const enrichedNodes = parsed.map((n) => {
-          const weight = parseFloat(n.label.match(/w=([\d.]+)/)?.[1] || "1");
-          return { ...n, weight, prime_factors: factorsFromWeight(weight) };
-        });
-        if (enrichedNodes.length > 0) setNodes(enrichedNodes);
       }
 
       // Add assistant turn
@@ -190,17 +171,25 @@ export default function WorkspacePage() {
         {
           role: "assistant",
           text: modelResponse,
-          v: [...v],
-          register: reg,
-          imagination: enrichment?.imagination?.spawned || [],
-          programs: enrichment?.programs?.defined || [],
+          v: [...localV],
+          register,
         },
       ]);
 
-      // Accumulate programs for 3D rendering
-      const newProgs = enrichment?.programs?.defined || [];
-      if (newProgs.length > 0) {
-        setPrograms(prev => [...prev, ...newProgs]);
+      // Silent background sync
+      if (localDB) {
+        import('../../../lib/klein').then(({ getUnsynced, markSynced }) => {
+          getUnsynced(localDB).then(unsynced => {
+            if (unsynced.length === 0) return;
+            fetch('/api/sync', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ uuid, entries: unsynced, sinceTick: localTick - 2 }),
+            }).then(r => r.json()).then(result => {
+              if (result.pushed > 0) markSynced(localDB, unsynced.map(e => e.tick));
+            }).catch(() => {});
+          });
+        });
       }
     } catch (err) {
       setError(err.message);
