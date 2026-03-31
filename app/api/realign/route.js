@@ -5,7 +5,10 @@ const SHARED_K = process.env.ENTANGLE_KEY || 'default_entangle_key';
 
 // Simple receipt computation (must match Python's compute_receipt)
 async function computeReceipt(tick, ip, K) {
-  const payload = JSON.stringify({ I: String(tick), O: ip, K: String(K) }, Object.keys({ I: '', O: '', K: '' }).sort());
+  // Must match Python: json.dumps({"I": str(I), "O": str(O), "K": str(K)}, sort_keys=True)
+  // Python uses ", " and ": " separators (with spaces)
+  const obj = { I: String(tick), K: String(K), O: ip }; // alphabetical
+  const payload = `{"I": "${obj.I}", "K": "${obj.K}", "O": "${obj.O}"}`;
   const encoder = new TextEncoder();
   const data = encoder.encode(payload);
   const hash = await crypto.subtle.digest('SHA-256', data);
