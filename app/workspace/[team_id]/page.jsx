@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { parseSchema, PRIME_COLORS, vToColor } from "../../../lib/kernel";
 import { renderNode, renderEdge, renderGoal, tickRotation, getRotation } from "../../../lib/space";
 import { lensLabel, lensCompositeLabel, lensFromFocus } from "../../../lib/lens";
-import { openTranslateDB, ingest, composeContext } from "../../../lib/translate";
+import { openTranslateDB, ingest, composeContext, buildConversationGraph, composeContextFromGraph } from "../../../lib/translate";
 import { useParams } from "next/navigation";
 
 const PRIME_BAR_COLORS = ["#e84040", "#40a8e8", "#d4a843", "#40d890"];
@@ -137,9 +137,11 @@ export default function WorkspacePage() {
         const dominant = localV.indexOf(Math.max(...localV));
         setRegister(['grounded', 'explorative', 'hedged', 'emphatic'][dominant]);
 
-        // Build schema from local surface
-        const ctx = await composeContext(localDB, localV, uuid);
-        schema = 'flowchart TD\n' + ctx + '\n  classDef shadow fill:#333,color:#999,stroke:#555';
+        // Build schema from conversation graph + accumulated surface
+        const graph = buildConversationGraph([...turns, { role: 'user', text: userMessage }]);
+        const graphCtx = composeContextFromGraph(graph, localV, uuid);
+        const surfaceCtx = await composeContext(localDB, localV, uuid);
+        schema = 'flowchart TD\n' + graphCtx + '\n' + surfaceCtx + '\n  classDef shadow fill:#333,color:#999,stroke:#555\n  classDef synapse fill:#1a1a2e,color:#c9a84c';
 
         const parsed = parseSchema(schema);
         const enrichedNodes = parsed.map((n) => {
@@ -170,7 +172,7 @@ export default function WorkspacePage() {
         body: JSON.stringify({
           message: userMessage,
           schema,
-          history: turns.map((t) => ({
+          history: turns.slice(-3).map((t) => ({
             role: t.role === "user" ? "user" : "assistant",
             text: t.text,
           })),
