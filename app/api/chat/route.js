@@ -64,6 +64,8 @@ export async function POST(request) {
       '',
       'You may use <imagine name="...">thought</imagine> tags to explore alternatives.',
       'Each imagine block spawns a geometric sphere the kernel tracks.',
+      'You may use <program name="...">description</program> tags to define optical functions.',
+      'Each program block creates an MF from your description. Describe topology, not code.',
       'Respond naturally. The topology IS your context.',
     ];
 

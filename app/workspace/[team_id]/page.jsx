@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { kernelTurn, parseSchema, PRIME_COLORS, vToColor } from "../../../lib/kernel";
 import { renderNode, renderEdge, renderGoal, tickRotation, getRotation } from "../../../lib/space";
 import { lensLabel, lensCompositeLabel, lensFromFocus } from "../../../lib/lens";
+import { openTranslateDB, ingest, composeContext } from "../../../lib/translate";
 import { useParams } from "next/navigation";
 
 const KERNEL_URL = "";
@@ -34,6 +35,9 @@ export default function WorkspacePage() {
   const [register, setRegister] = useState("grounded");
   const [lens, setLens] = useState("default");
   const [members, setMembers] = useState([]);
+  const [localDB, setLocalDB] = useState(null);
+  const [localTick, setLocalTick] = useState(0);
+  const [programs, setPrograms] = useState([]);
   const spaceRef = useRef(null);
   const convRef = useRef(null);
   const animRef = useRef(null);
@@ -41,8 +45,14 @@ export default function WorkspacePage() {
   // Auth
   useEffect(() => {
     const stored = localStorage.getItem("torus_uuid");
-    if (stored) setUuid(stored);
-    else window.location.href = "/synapses";
+    if (stored) {
+      setUuid(stored);
+      openTranslateDB()
+        .then((db) => setLocalDB(db))
+        .catch((err) => console.error('[klein] DB open failed:', err));
+    } else {
+      window.location.href = "/synapses";
+    }
   }, []);
 
   // Load team
@@ -105,9 +115,24 @@ export default function WorkspacePage() {
     setTurns((prev) => [...prev, { role: "user", text: userMessage }]);
 
     try {
+      // Step 0: Decompose into local Klein bottle — user voice
+      if (localDB) {
+        await ingest(userMessage, localDB, localTick, 'user');
+        setLocalTick(prev => prev + 1);
+      }
+
       // Step 1: kernel state update
       const kernelState = await kernelTurn(uuid, userMessage);
-      const schema = kernelState?.schema || "";
+      const kernelSchema = kernelState?.schema || "";
+
+      // Compose local context and nest into kernel schema
+      let schema = kernelSchema;
+      if (localDB) {
+        const localCtx = await composeContext(localDB, currentV, uuid);
+        if (localCtx) {
+          schema = kernelSchema + '\n' + localCtx;
+        }
+      }
 
       // Step 2: call LLM
       const chatRes = await fetch("/api/chat", {
@@ -133,6 +158,12 @@ export default function WorkspacePage() {
       }
 
       const modelResponse = chatData.response || "";
+
+      // Step 2.5: Ingest model response — synapse voice on same Klein bottle
+      if (localDB && modelResponse) {
+        await ingest(modelResponse, localDB, localTick, 'synapse');
+        setLocalTick(prev => prev + 1);
+      }
 
       // Step 3: kernel enrichment
       const enrichment = await kernelTurn(uuid, null, modelResponse);
@@ -162,8 +193,15 @@ export default function WorkspacePage() {
           v: [...v],
           register: reg,
           imagination: enrichment?.imagination?.spawned || [],
+          programs: enrichment?.programs?.defined || [],
         },
       ]);
+
+      // Accumulate programs for 3D rendering
+      const newProgs = enrichment?.programs?.defined || [];
+      if (newProgs.length > 0) {
+        setPrograms(prev => [...prev, ...newProgs]);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -258,6 +296,36 @@ export default function WorkspacePage() {
             />
           ))}
 
+          {/* Program nodes — hexagonal, positioned by address */}
+          {programs.map((prog, i) => {
+            const theta = ((prog.address || 1) * 137.508) % 360;
+            const phi = ((prog.trace || 3) * 30) % 360;
+            const skin_r = prog.valid ? 9.692 : 12.257;
+            const visual = renderNode({ theta, phi, skin_r, weight: prog.address || 1, prime_factors: [], label: prog.name }, lens);
+            return (
+              <div
+                key={`prog-${prog.name}-${i}`}
+                title={`${prog.name}\n${(prog.operations || []).join(' → ')}\naddr=${prog.address}`}
+                style={{
+                  position: "absolute",
+                  left: `${visual.x}%`,
+                  top: `${visual.y}%`,
+                  width: visual.size * 1.5,
+                  height: visual.size * 1.5,
+                  borderRadius: 4,
+                  background: prog.valid ? "#0a1a0a" : "#1a1a08",
+                  border: `1px solid ${prog.valid ? "#4ade80" : "#d4a843"}`,
+                  opacity: visual.opacity,
+                  transform: "translate(-50%, -50%) rotate(45deg)",
+                  transition: "all 0.5s ease",
+                  cursor: "pointer",
+                  boxShadow: `0 0 ${visual.size}px ${prog.valid ? "#4ade8033" : "#d4a84333"}`,
+                  zIndex: Math.round(visual.depth * 100) + 50,
+                }}
+              />
+            );
+          })}
+
           {/* Subgraph labels */}
           {[...new Set(nodes.map((n) => n.subgraph).filter(Boolean))].map((sg, i) => (
             <div key={sg} style={{
@@ -340,6 +408,19 @@ export default function WorkspacePage() {
                         color: s.hypersphere ? "#4ade80" : s.closed ? "#60a5fa" : "#f87171",
                       }}>
                         ◇ {s.name} t={s.trace}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {turn.programs && turn.programs.length > 0 && (
+                  <div style={{ marginTop: 4, display: "flex", gap: 4, flexWrap: "wrap" }}>
+                    {turn.programs.map((p, j) => (
+                      <span key={j} style={{
+                        fontSize: 8, padding: "2px 6px", borderRadius: 8,
+                        background: p.valid ? "#0a1a0a" : "#1a1a08",
+                        color: p.valid ? "#4ade80" : "#d4a843",
+                      }}>
+                        ⬡ {p.name} {(p.operations || []).join('→')}
                       </span>
                     ))}
                   </div>

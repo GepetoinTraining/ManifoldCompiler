@@ -1,9 +1,18 @@
 import { NextResponse } from 'next/server';
 
 export async function POST(request) {
-  const { email, password } = await request.json();
+  let body;
+  try {
+    body = await request.json();
+  } catch (e) {
+    console.error('[login] failed to parse request body:', e.message);
+    return NextResponse.json({ error: 'invalid JSON body' }, { status: 400 });
+  }
+  const { email, password } = body;
+  console.log(`[login] incoming: email=${email}`);
 
   if (!email || !password) {
+    console.log('[login] rejected: missing fields');
     return NextResponse.json({ error: 'missing fields' }, { status: 400 });
   }
 
@@ -19,6 +28,7 @@ export async function POST(request) {
 
   try {
     // First: try to find by computed uuid
+    console.log(`[login] wake check: http://${ip}:${port}/api/wake?uuid=${uuid}`);
     const resp = await fetch(`http://${ip}:${port}/api/wake?uuid=${uuid}`);
     const result = await resp.json();
 
@@ -51,6 +61,7 @@ export async function POST(request) {
 
     return NextResponse.json({ error: 'user not found' }, { status: 401 });
   } catch (e) {
+    console.error(`[login] FAILED: ${e.message}`, e.stack);
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }

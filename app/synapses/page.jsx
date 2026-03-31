@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { kernelWake, kernelTurn, parseSchema, PRIME_COLORS, vToColor } from '../../lib/kernel';
+import { openTranslateDB, ingest, composeContext } from '../../lib/translate';
 import LoginGate from './login';
 import TeamsPanel from './teams';
 
@@ -38,6 +39,8 @@ export default function SynapsesPage() {
   const [register, setRegister] = useState('grounded');
   const [tension, setTension] = useState(0);
   const [concepts, setConcepts] = useState([]);
+  const [localDB, setLocalDB] = useState(null);
+  const [localTick, setLocalTick] = useState(0);
   const conversationEnd = useRef(null);
 
   // Check auth on mount
@@ -61,6 +64,14 @@ export default function SynapsesPage() {
       })
       .catch(() => setAuthChecked(true));
   }, []);
+
+  // Open local Klein bottle DB once authenticated
+  useEffect(() => {
+    if (!uuid) return;
+    openTranslateDB()
+      .then((db) => setLocalDB(db))
+      .catch((err) => console.error('[klein] DB open failed:', err));
+  }, [uuid]);
 
   // Wake the kernel once authenticated
   useEffect(() => {
@@ -98,12 +109,38 @@ export default function SynapsesPage() {
     setTurns((prev) => [...prev, { role: 'user', text: userMessage }]);
 
     try {
+      // Step 0: Decompose into local Klein bottle — BEFORE anything else
+      // This classifies every word, assigns prime addresses, stores on surface
+      let localV = currentV;
+      let localContext = '';
+      if (localDB) {
+        const ingested = await ingest(userMessage, localDB, localTick, 'user');
+        setLocalTick(prev => prev + 1);
+        localV = ingested.v;
+        localContext = await composeContext(localDB, ingested.v, uuid);
+      }
+
       // Step 1: Tell the kernel about the user message (async state update)
       // This updates flywheels, lattice, V(t), gears — returns enriched schema
       const kernelState = await kernelTurn(uuid, userMessage);
 
-      // Extract kernel state
-      const currentSchema = kernelState?.schema || schema?.schema || '';
+      // Extract kernel state — local Klein surface nests inside kernel schema
+      const kernelSchema = kernelState?.schema || schema?.schema || '';
+      let currentSchema = kernelSchema;
+      if (localContext) {
+        // Insert local subgraph before classDef/style lines (end of schema)
+        const classDefIdx = kernelSchema.indexOf('  classDef');
+        if (classDefIdx > 0) {
+          currentSchema = kernelSchema.slice(0, classDefIdx)
+            + localContext + '\n'
+            + '  KLEIN_' + uuid.slice(0, 8) + ' -->|feeds| VOICE\n'
+            + kernelSchema.slice(classDefIdx);
+        } else {
+          // No classDef — append with edge to VOICE if it exists
+          currentSchema = kernelSchema + '\n' + localContext
+            + (kernelSchema.includes('VOICE') ? '\n  KLEIN_' + uuid.slice(0, 8) + ' -->|feeds| VOICE' : '');
+        }
+      }
       const gearNotes = (kernelState?.gear_contributions || []).map(g => g.note);
       const v = kernelState?.v || kernelState?.voice_state?.v || currentV;
       const reg = kernelState?.register || kernelState?.voice_state?.register || register;
@@ -143,6 +180,13 @@ export default function SynapsesPage() {
 
       const modelResponse = chatData.response || '';
 
+      // Step 2.5: Ingest model response into local surface too
+      // The AI's words grow the same Klein bottle — tagged as synapse voice
+      if (localDB && modelResponse) {
+        await ingest(modelResponse, localDB, localTick, 'synapse');
+        setLocalTick(prev => prev + 1);
+      }
+
       // Step 3: Tell the kernel about the model's response (async enrichment)
       // This parses <imagine> tags, enriches schema, updates surfaces
       const enrichment = await kernelTurn(uuid, null, modelResponse);
@@ -161,6 +205,9 @@ export default function SynapsesPage() {
         if (parsed.length > 0) setNodes(parsed);
       }
 
+      // Extract programs from enrichment
+      const programs = enrichment?.programs?.defined || [];
+
       // Add assistant turn
       setTurns((prev) => [
         ...prev,
@@ -172,6 +219,7 @@ export default function SynapsesPage() {
           tension: tens,
           concepts: responseConcepts,
           imagination,
+          programs,
           model: chatData.model,
           tokens: chatData.usage,
         },
@@ -475,22 +523,32 @@ export default function SynapsesPage() {
               {/* Imagination spheres */}
               {turn.imagination && turn.imagination.length > 0 && (
                 <div style={{
-                  display: 'flex',
-                  gap: 6,
-                  paddingLeft: 4,
-                  marginTop: 4,
-                  flexWrap: 'wrap',
+                  display: 'flex', gap: 6, paddingLeft: 4, marginTop: 4, flexWrap: 'wrap',
                 }}>
                   {turn.imagination.map((sphere, si) => (
                     <div key={si} style={{
-                      fontSize: 9,
-                      color: '#b060d0',
-                      background: '#14081c',
-                      border: '1px solid #b060d033',
-                      borderRadius: 12,
-                      padding: '2px 8px',
+                      fontSize: 9, color: '#b060d0', background: '#14081c',
+                      border: '1px solid #b060d033', borderRadius: 12, padding: '2px 8px',
                     }}>
                       {typeof sphere === 'string' ? sphere : sphere.label || JSON.stringify(sphere)}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Programs */}
+              {turn.programs && turn.programs.length > 0 && (
+                <div style={{
+                  display: 'flex', gap: 6, paddingLeft: 4, marginTop: 4, flexWrap: 'wrap',
+                }}>
+                  {turn.programs.map((prog, pi) => (
+                    <div key={pi} style={{
+                      fontSize: 9, padding: '2px 8px', borderRadius: 12,
+                      background: prog.valid ? '#0a1a0a' : '#1a1a08',
+                      border: `1px solid ${prog.valid ? '#4ade8033' : '#d4a84333'}`,
+                      color: prog.valid ? '#4ade80' : '#d4a843',
+                    }}>
+                      {prog.name} {prog.operations?.join(' \u2192 ')} addr={prog.address}
                     </div>
                   ))}
                 </div>

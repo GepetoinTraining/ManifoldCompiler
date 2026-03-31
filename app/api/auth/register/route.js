@@ -4,18 +4,35 @@ import { NextResponse } from 'next/server';
 async function kernelRequest(path, body) {
   const ip = process.env.KERNEL_IP || '127.0.0.1';
   const port = process.env.KERNEL_PORT || '3141';
-  const resp = await fetch(`http://${ip}:${port}${path}`, {
+  const url = `http://${ip}:${port}${path}`;
+  console.log(`[register] kernel request: ${url}`);
+  const resp = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Torus-Key': process.env.TORUS_API_KEY || '' },
     body: JSON.stringify(body),
   });
+  console.log(`[register] kernel response: ${resp.status} ${resp.statusText}`);
+  if (!resp.ok) {
+    const text = await resp.text();
+    console.error(`[register] kernel error body: ${text}`);
+    throw new Error(`Kernel ${resp.status}: ${text}`);
+  }
   return resp.json();
 }
 
 export async function POST(request) {
-  const { email, password, name, profession } = await request.json();
+  let body;
+  try {
+    body = await request.json();
+  } catch (e) {
+    console.error('[register] failed to parse request body:', e.message);
+    return NextResponse.json({ error: 'invalid JSON body' }, { status: 400 });
+  }
+  const { email, password, name, profession } = body;
+  console.log(`[register] incoming: email=${email}, name=${name}, profession=${profession || 'none'}`);
 
   if (!email || !password || !name) {
+    console.log('[register] rejected: missing fields');
     return NextResponse.json({ error: 'missing fields' }, { status: 400 });
   }
 
@@ -40,6 +57,7 @@ export async function POST(request) {
     });
     return response;
   } catch (e) {
+    console.error(`[register] FAILED: ${e.message}`, e.stack);
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
 }
