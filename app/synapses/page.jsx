@@ -272,10 +272,12 @@ export default function SynapsesPage() {
     return <LoginGate onAuth={(id) => { setUuid(id); }} />;
   }
 
+  // Build conversation graph for the state panel
+  const convGraph = buildConversationGraph(turns);
+
   return (
     <div style={{
       display: 'flex',
-      flexDirection: 'column',
       height: '100vh',
       width: '100vw',
       paddingTop: 50,
@@ -287,202 +289,138 @@ export default function SynapsesPage() {
       overflow: 'hidden',
     }}>
 
-      {/* Teams Panel */}
-      <TeamsPanel uuid={uuid} />
+      {/* ═══ LEFT COLUMN: Visuals ═══ */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
 
-      {/* 3D Workspace */}
-      <div style={{ flex: 1, borderBottom: '1px solid #1a1a2e', minHeight: 0, position: 'relative' }}>
-        <TorusSpace nodes={nodes} programs={allPrograms} />
-        {error && (
-          <div style={{
-            position: 'absolute', bottom: 8, left: 12, right: 12,
-            color: '#e84040', fontSize: 10, background: '#1a0808',
-            padding: '4px 8px', borderRadius: 3, border: '1px solid #e8404033',
-          }}>
-            {error}
+        {/* Row 1: Torus + Conv State */}
+        <div style={{ display: 'flex', height: '40%', minHeight: 0, borderBottom: '1px solid #1a1a2e' }}>
+
+          {/* Torus (interactive) */}
+          <div style={{ flex: 1, position: 'relative', borderRight: '1px solid #1a1a2e' }}>
+            <TorusSpace nodes={nodes} programs={allPrograms} />
+            {/* V(t) overlay */}
+            <div style={{
+              position: 'absolute', bottom: 6, left: 8, display: 'flex', alignItems: 'center', gap: 4,
+            }}>
+              {currentV.map((val, i) => (
+                <div key={i} title={`p${PRIME_LABELS[i]}: ${(val*100).toFixed(0)}%`} style={{
+                  width: Math.max(6, val * 50), height: 8,
+                  background: PRIME_BAR_COLORS[i], opacity: 0.3 + val * 0.7,
+                  borderRadius: 2, transition: 'all 0.3s',
+                }} />
+              ))}
+              <div style={{
+                width: 8, height: 8, borderRadius: '50%',
+                background: vToColor(currentV), boxShadow: `0 0 4px ${vToColor(currentV)}`,
+              }} />
+              <span style={{ fontSize: 8, color: '#555', textTransform: 'uppercase', letterSpacing: 1 }}>
+                {register}
+              </span>
+            </div>
           </div>
-        )}
-      </div>
 
-      {/* Voice Bar */}
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 12,
-        padding: '6px 12px',
-        height: 36,
-        boxSizing: 'border-box',
-        borderBottom: '1px solid #1a1a2e',
-        background: '#080812',
-        flexShrink: 0,
-      }}>
-        {/* V(t) color segments */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          <span style={{ fontSize: 9, color: '#555', marginRight: 4 }}>V(t)</span>
-          {currentV.map((val, i) => (
-            <div
-              key={i}
-              title={`prime ${PRIME_LABELS[i]}: ${(val * 100).toFixed(1)}%`}
-              style={{
-                width: Math.max(8, val * 80),
-                height: 12,
-                background: PRIME_BAR_COLORS[i],
-                opacity: 0.3 + val * 0.7,
-                borderRadius: 2,
-                transition: 'width 0.3s ease, opacity 0.3s ease',
-              }}
-            />
-          ))}
+          {/* Conversation State (graph visualization) */}
+          <div style={{
+            width: '35%', position: 'relative', overflow: 'hidden',
+            background: 'radial-gradient(ellipse at center, #080818 0%, #050510 100%)',
+          }}>
+            <div style={{ position: 'absolute', top: 6, left: 8, fontSize: 8, color: '#444', letterSpacing: 1, textTransform: 'uppercase' }}>
+              Conv Graph — {convGraph.nodes.length}n {convGraph.edges.length}e
+            </div>
+            {/* Render graph nodes as small positioned dots */}
+            {convGraph.nodes.slice(-15).map((n, i) => {
+              const angle = (i * 137.508 * Math.PI / 180);
+              const r = 25 + (n.weight % 20);
+              const x = 50 + r * Math.cos(angle);
+              const y = 50 + r * Math.sin(angle);
+              const size = Math.max(3, Math.min(10, Math.log(n.weight + 1) * 2));
+              return (
+                <div key={`gn-${i}`} title={`${n.word} w=${n.weight} t${n.turn}`} style={{
+                  position: 'absolute', left: `${x}%`, top: `${y}%`,
+                  width: size, height: size, borderRadius: '50%',
+                  background: n.role === 'user' ? '#40a8e8' : '#c9a84c',
+                  opacity: 0.6, transform: 'translate(-50%,-50%)',
+                  transition: 'all 0.5s',
+                }} />
+              );
+            })}
+          </div>
         </div>
 
-        {/* Blended color dot */}
-        <div style={{
-          width: 12,
-          height: 12,
-          borderRadius: '50%',
-          background: vToColor(currentV),
-          boxShadow: `0 0 6px ${vToColor(currentV)}`,
-          flexShrink: 0,
-        }} />
-
-        {/* Register */}
-        <span style={{
-          fontSize: 10,
-          color: '#c9a84c',
-          letterSpacing: 1,
-          textTransform: 'uppercase',
-        }}>
-          {register}
-        </span>
-
-        {/* Tension */}
-        <span style={{
-          fontSize: 10,
-          color: tension > 0.6 ? '#e84040' : tension > 0.3 ? '#d4a843' : '#40d890',
-          marginLeft: 'auto',
-        }}>
-          tension: {(tension * 100).toFixed(0)}%
-        </span>
-
-        {/* Concepts */}
-        {concepts.length > 0 && (
-          <div style={{ display: 'flex', gap: 4 }}>
-            {concepts.slice(0, 5).map((c, i) => (
-              <span key={i} style={{
-                fontSize: 9,
-                color: '#888',
-                background: '#0e0e18',
-                padding: '1px 5px',
-                borderRadius: 3,
-                border: '1px solid #1a1a2e',
-              }}>
-                {typeof c === 'string' ? c : c.label || c.name || JSON.stringify(c)}
-              </span>
-            ))}
+        {/* Row 2: 3D Workspace (personal) */}
+        <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
+          <TorusSpace nodes={nodes} programs={allPrograms} />
+          <div style={{ position: 'absolute', top: 6, left: 8, fontSize: 8, color: '#333', letterSpacing: 1, textTransform: 'uppercase' }}>
+            Workspace
           </div>
-        )}
+          {error && (
+            <div style={{
+              position: 'absolute', bottom: 8, left: 12, right: 12,
+              color: '#e84040', fontSize: 10, background: '#1a0808',
+              padding: '4px 8px', borderRadius: 3, border: '1px solid #e8404033',
+            }}>
+              {error}
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Conversation */}
+      {/* ═══ RIGHT COLUMN: Chat ═══ */}
       <div style={{
-        flex: '0 0 auto',
-        display: 'flex',
-        flexDirection: 'column',
-        maxHeight: 300,
-        height: '40%',
-        minHeight: 0,
-        borderTop: '1px solid #1a1a2e',
+        width: 380, display: 'flex', flexDirection: 'column',
+        borderLeft: '1px solid #1a1a2e', background: '#0a0a0f',
       }}>
+
         {/* Turn history */}
-        <div style={{
-          flex: 1,
-          overflowY: 'auto',
-          padding: '8px 12px',
-        }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '8px 12px' }}>
           {turns.length === 0 && (
-            <div style={{ color: '#333', fontSize: 11, padding: '12px 0' }}>
-              Type a message to begin a conversation with the kernel.
+            <div style={{ color: '#333', fontSize: 11, padding: '20px 0', textAlign: 'center' }}>
+              Speak to build the space.
             </div>
           )}
 
           {turns.map((turn, i) => (
             <div key={i} style={{
-              marginBottom: 8,
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 2,
+              marginBottom: 10, paddingLeft: turn.role === 'user' ? 0 : 8,
+              borderLeft: turn.role === 'user' ? 'none' : `2px solid ${vToColor(turn.v || currentV)}`,
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{
-                  fontSize: 9,
-                  color: turn.role === 'user' ? '#40a8e8' : '#c9a84c',
-                  textTransform: 'uppercase',
-                  letterSpacing: 1,
-                  fontWeight: 600,
-                }}>
-                  {turn.role === 'user' ? 'You' : 'Kernel'}
-                </span>
-
-                {turn.v && (
-                  <div style={{ display: 'flex', gap: 1 }}>
-                    {turn.v.map((val, j) => (
-                      <div key={j} style={{
-                        width: 6,
-                        height: 6,
-                        borderRadius: '50%',
-                        background: PRIME_BAR_COLORS[j],
-                        opacity: 0.3 + val * 0.7,
-                      }} />
-                    ))}
-                  </div>
-                )}
-
-                {turn.register && (
-                  <span style={{ fontSize: 9, color: '#555' }}>
-                    [{turn.register}]
-                  </span>
-                )}
+              <div style={{ fontSize: 8, color: '#444', marginBottom: 2, textTransform: 'uppercase', letterSpacing: 1 }}>
+                {turn.role === 'user' ? 'you' : 'synapse'}
+                {turn.register && ` · ${turn.register}`}
               </div>
-
               <div style={{
-                color: turn.role === 'user' ? '#aaa' : '#e8d5a3',
-                lineHeight: 1.5,
-                paddingLeft: 4,
+                fontSize: 11, lineHeight: 1.618,
+                color: turn.role === 'user' ? '#e8d5a3' : '#bbb',
                 whiteSpace: 'pre-wrap',
               }}>
                 {turn.text || '(no response)'}
               </div>
 
-              {/* Imagination spheres */}
+              {/* Imagination pills */}
               {turn.imagination && turn.imagination.length > 0 && (
-                <div style={{
-                  display: 'flex', gap: 6, paddingLeft: 4, marginTop: 4, flexWrap: 'wrap',
-                }}>
-                  {turn.imagination.map((sphere, si) => (
-                    <div key={si} style={{
-                      fontSize: 9, color: '#b060d0', background: '#14081c',
-                      border: '1px solid #b060d033', borderRadius: 12, padding: '2px 8px',
+                <div style={{ display: 'flex', gap: 4, marginTop: 4, flexWrap: 'wrap' }}>
+                  {turn.imagination.map((s, j) => (
+                    <span key={j} style={{
+                      fontSize: 8, padding: '2px 6px', borderRadius: 8,
+                      background: '#14081c', color: '#b060d0', border: '1px solid #b060d033',
                     }}>
-                      {typeof sphere === 'string' ? sphere : sphere.label || JSON.stringify(sphere)}
-                    </div>
+                      ◇ {s.name || s.label || JSON.stringify(s)}
+                    </span>
                   ))}
                 </div>
               )}
 
-              {/* Programs */}
+              {/* Program pills */}
               {turn.programs && turn.programs.length > 0 && (
-                <div style={{
-                  display: 'flex', gap: 6, paddingLeft: 4, marginTop: 4, flexWrap: 'wrap',
-                }}>
-                  {turn.programs.map((prog, pi) => (
-                    <div key={pi} style={{
-                      fontSize: 9, padding: '2px 8px', borderRadius: 12,
-                      background: prog.valid ? '#0a1a0a' : '#1a1a08',
-                      border: `1px solid ${prog.valid ? '#4ade8033' : '#d4a84333'}`,
-                      color: prog.valid ? '#4ade80' : '#d4a843',
+                <div style={{ display: 'flex', gap: 4, marginTop: 4, flexWrap: 'wrap' }}>
+                  {turn.programs.map((p, j) => (
+                    <span key={j} style={{
+                      fontSize: 8, padding: '2px 6px', borderRadius: 8,
+                      background: p.valid ? '#0a1a0a' : '#1a1a08',
+                      color: p.valid ? '#4ade80' : '#d4a843',
                     }}>
-                      {prog.name} {prog.operations?.join(' \u2192 ')} addr={prog.address}
-                    </div>
+                      ⬡ {p.name}
+                    </span>
                   ))}
                 </div>
               )}
@@ -491,51 +429,36 @@ export default function SynapsesPage() {
           <div ref={conversationEnd} />
         </div>
 
-        {/* Input */}
+        {/* Input — growing textarea */}
         <form onSubmit={handleSubmit} style={{
-          display: 'flex',
-          gap: 8,
-          padding: '8px 12px',
-          borderTop: '1px solid #1a1a2e',
-          background: '#080812',
-          flexShrink: 0,
+          display: 'flex', gap: 6, padding: '8px 12px',
+          borderTop: '1px solid #1a1a2e', background: '#080812', flexShrink: 0, alignItems: 'flex-end',
         }}>
-          <input
-            type="text"
+          <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmit(e); } }}
             placeholder={loading ? 'Thinking...' : 'Speak to the kernel...'}
             disabled={loading}
+            rows={1}
             style={{
-              flex: 1,
-              background: '#0e0e14',
-              border: '1px solid #1a1a2e',
-              borderRadius: 3,
-              padding: '6px 10px',
-              color: '#e8d5a3',
-              fontFamily: "'JetBrains Mono', monospace",
-              fontSize: 12,
-              outline: 'none',
+              flex: 1, background: '#0e0e14', border: '1px solid #1a1a2e',
+              borderRadius: 4, padding: '8px 10px', color: '#e8d5a3',
+              fontFamily: "'JetBrains Mono', monospace", fontSize: 11,
+              outline: 'none', resize: 'none', lineHeight: 1.5,
+              minHeight: 36, maxHeight: 120,
+              height: Math.min(120, Math.max(36, 20 + (input.split('\n').length) * 18)),
             }}
           />
-          <button
-            type="submit"
-            disabled={loading || !input.trim()}
-            style={{
-              background: loading ? '#1a1a2e' : '#c9a84c',
-              color: loading ? '#555' : '#050510',
-              border: 'none',
-              borderRadius: 3,
-              padding: '6px 14px',
-              fontFamily: "'JetBrains Mono', monospace",
-              fontSize: 11,
-              fontWeight: 600,
-              letterSpacing: 1,
-              cursor: loading ? 'default' : 'pointer',
-              textTransform: 'uppercase',
-            }}
-          >
-            {loading ? '...' : 'Send'}
+          <button type="submit" disabled={loading || !input.trim()} style={{
+            background: loading ? '#1a1a2e' : '#c9a84c',
+            color: loading ? '#555' : '#050510',
+            border: 'none', borderRadius: 4,
+            padding: '8px 12px', fontFamily: 'inherit',
+            fontSize: 11, fontWeight: 600, cursor: loading ? 'default' : 'pointer',
+            opacity: loading ? 0.5 : 1,
+          }}>
+            ⬡
           </button>
         </form>
       </div>
