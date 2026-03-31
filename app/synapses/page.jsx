@@ -59,6 +59,7 @@ export default function SynapsesPage() {
   const [concepts, setConcepts] = useState([]);
   const [localDB, setLocalDB] = useState(null);
   const [localTick, setLocalTick] = useState(0);
+  const [dbWords, setDbWords] = useState([]);  // Full DB torus — all word_coords
   const conversationEnd = useRef(null);
 
   // Check auth on mount
@@ -90,6 +91,16 @@ export default function SynapsesPage() {
       .then((db) => setLocalDB(db))
       .catch((err) => console.error('[klein] DB open failed:', err));
   }, [uuid]);
+
+  // Load full DB torus words
+  function refreshDbWords() {
+    if (!localDB) return;
+    const tx = localDB.transaction('word_coords', 'readonly');
+    const req = tx.objectStore('word_coords').getAll();
+    req.onsuccess = () => setDbWords(req.result || []);
+  }
+
+  useEffect(() => { refreshDbWords(); }, [localDB]);
 
   // Build initial context from local Klein bottle
   useEffect(() => {
@@ -132,6 +143,7 @@ export default function SynapsesPage() {
       if (localDB) {
         const ingested = await ingest(userMessage, localDB, localTick, 'user');
         setLocalTick(prev => prev + 1);
+        refreshDbWords();
         localV = ingested.v;
         setCurrentV(localV);
 
@@ -199,6 +211,7 @@ export default function SynapsesPage() {
       if (localDB && clean) {
         const modelIngested = await ingest(clean, localDB, localTick, 'synapse');
         setLocalTick(prev => prev + 1);
+        refreshDbWords();
 
         const blended = localV.map((v, i) => (v + modelIngested.v[i]) / 2);
         setCurrentV(blended);
@@ -295,9 +308,36 @@ export default function SynapsesPage() {
         {/* Row 1: Torus + Conv State */}
         <div style={{ display: 'flex', height: '40%', minHeight: 0, borderBottom: '1px solid #1a1a2e' }}>
 
-          {/* Torus (interactive) */}
-          <div style={{ flex: 1, position: 'relative', borderRight: '1px solid #1a1a2e' }}>
-            <TorusSpace nodes={nodes} programs={allPrograms} />
+          {/* Full DB Torus — every word at its real theta/phi */}
+          <div style={{
+            flex: 1, position: 'relative', borderRight: '1px solid #1a1a2e', overflow: 'hidden',
+            background: 'radial-gradient(ellipse at center, #0a0a1a 0%, #050510 100%)',
+          }}>
+            <div style={{ position: 'absolute', top: 6, left: 8, fontSize: 8, color: '#444', letterSpacing: 1, textTransform: 'uppercase' }}>
+              Torus — {dbWords.length}w
+            </div>
+            {/* Words positioned by real torus coordinates */}
+            {dbWords.map((w, i) => {
+              // Map theta (0-36000) to x%, phi to y%
+              const x = (w.theta / 360) % 100;
+              const y = 10 + (w.phi / 360) * 80;  // phi 0 = all same row for now
+              const size = Math.max(2, Math.min(12, Math.log(w.count + 1) * 2.5));
+              const mask = w.mask || 0;
+              const color = mask & 1 ? '#e84040' : mask & 2 ? '#40a8e8' : mask & 4 ? '#d4a843' : mask & 8 ? '#40d890' : '#555';
+              const opacity = Math.min(0.9, 0.2 + w.count * 0.05);
+              return (
+                <div key={w.word} title={`${w.word} x${w.count} θ=${w.theta}`} style={{
+                  position: 'absolute',
+                  left: `${x}%`, top: `${y}%`,
+                  width: size, height: size,
+                  borderRadius: '50%', background: color, opacity,
+                  transform: 'translate(-50%,-50%)',
+                  transition: 'all 0.3s',
+                  cursor: 'pointer',
+                  boxShadow: w.count > 3 ? `0 0 ${size}px ${color}44` : 'none',
+                }} />
+              );
+            })}
             {/* V(t) overlay */}
             <div style={{
               position: 'absolute', bottom: 6, left: 8, display: 'flex', alignItems: 'center', gap: 4,
