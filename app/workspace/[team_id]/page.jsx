@@ -7,8 +7,23 @@ import { lensLabel, lensCompositeLabel, lensFromFocus } from "../../../lib/lens"
 import { openTranslateDB, ingest, composeContext } from "../../../lib/translate";
 import { useParams } from "next/navigation";
 
-const KERNEL_URL = "";
 const PRIME_BAR_COLORS = ["#e84040", "#40a8e8", "#d4a843", "#40d890"];
+
+function parseTags(text) {
+  const imagines = [];
+  const programs = [];
+  let clean = text;
+  clean = clean.replace(/<imagine\s+name="([^"]+)">([\s\S]*?)<\/imagine>/g, (_, name, content) => {
+    imagines.push({ name, text: content.trim() });
+    return '';
+  });
+  clean = clean.replace(/<program\s+name="([^"]+)">([\s\S]*?)<\/program>/g, (_, name, content) => {
+    programs.push({ name, text: content.trim() });
+    return '';
+  });
+  clean = clean.replace(/\n{3,}/g, '\n\n').trim();
+  return { clean, imagines, programs };
+}
 
 function factorsFromWeight(weight) {
   const factors = [];
@@ -134,6 +149,20 @@ export default function WorkspacePage() {
         if (enrichedNodes.length > 0) setNodes(enrichedNodes);
       }
 
+      // Adaptive model tier
+      let modelTier = 'sonnet';
+      if (localDB) {
+        try {
+          const tx = localDB.transaction('word_coords', 'readonly');
+          const count = await new Promise(r => {
+            const req = tx.objectStore('word_coords').count();
+            req.onsuccess = () => r(req.result);
+            req.onerror = () => r(0);
+          });
+          if (count > 100) modelTier = 'haiku';
+        } catch {}
+      }
+
       // Step 2: Call LLM — schema from tiny kernel
       const chatRes = await fetch("/api/chat", {
         method: "POST",
@@ -145,7 +174,7 @@ export default function WorkspacePage() {
             role: t.role === "user" ? "user" : "assistant",
             text: t.text,
           })),
-          model_tier: "sonnet",
+          model_tier: modelTier,
           uuid,
         }),
       });
@@ -159,22 +188,32 @@ export default function WorkspacePage() {
 
       const modelResponse = chatData.response || "";
 
-      // Step 3: Ingest model response — synapse voice
-      if (localDB && modelResponse) {
-        await ingest(modelResponse, localDB, localTick, 'synapse');
+      // Parse tags before display or ingestion
+      const { clean, imagines, programs: newProgs } = parseTags(modelResponse);
+
+      // Step 3: Ingest CLEAN response — no tag pollution
+      if (localDB && clean) {
+        await ingest(clean, localDB, localTick, 'synapse');
         setLocalTick(prev => prev + 1);
       }
 
-      // Add assistant turn
+      // Add assistant turn — clean text, tags to renderers
       setTurns((prev) => [
         ...prev,
         {
           role: "assistant",
-          text: modelResponse,
+          text: clean,
+          imagination: imagines,
+          programs: newProgs,
           v: [...localV],
           register,
         },
       ]);
+
+      // Accumulate programs for 3D rendering
+      if (newProgs.length > 0) {
+        setPrograms(prev => [...prev, ...newProgs]);
+      }
 
       // Silent background sync
       if (localDB) {

@@ -5,9 +5,27 @@ import { parseSchema, PRIME_COLORS, vToColor } from '../../lib/kernel';
 import { openTranslateDB, ingest, composeContext } from '../../lib/translate';
 import LoginGate from './login';
 import TeamsPanel from './teams';
+import TorusSpace from '../components/TorusSpace';
 
 const PRIME_LABELS = ['2', '3', '5', '7'];
 const PRIME_BAR_COLORS = ['#e84040', '#40a8e8', '#d4a843', '#40d890'];
+
+// Parse and strip <imagine> and <program> tags from model response
+function parseTags(text) {
+  const imagines = [];
+  const programs = [];
+  let clean = text;
+  clean = clean.replace(/<imagine\s+name="([^"]+)">([\s\S]*?)<\/imagine>/g, (_, name, content) => {
+    imagines.push({ name, text: content.trim() });
+    return '';
+  });
+  clean = clean.replace(/<program\s+name="([^"]+)">([\s\S]*?)<\/program>/g, (_, name, content) => {
+    programs.push({ name, text: content.trim() });
+    return '';
+  });
+  clean = clean.replace(/\n{3,}/g, '\n\n').trim();
+  return { clean, imagines, programs };
+}
 
 // Subgraph color mapping for landscape nodes
 const SUBGRAPH_COLORS = {
@@ -131,6 +149,20 @@ export default function SynapsesPage() {
         if (parsed.length > 0) setNodes(parsed);
       }
 
+      // Adaptive model tier — sonnet until torus has density, then haiku
+      let modelTier = 'sonnet';
+      if (localDB) {
+        try {
+          const tx = localDB.transaction('word_coords', 'readonly');
+          const count = await new Promise(r => {
+            const req = tx.objectStore('word_coords').count();
+            req.onsuccess = () => r(req.result);
+            req.onerror = () => r(0);
+          });
+          if (count > 100) modelTier = 'haiku';
+        } catch {}
+      }
+
       // Step 2: Call the LLM — schema comes from tiny kernel, not server
       const chatResponse = await fetch('/api/chat', {
         method: 'POST',
@@ -139,7 +171,7 @@ export default function SynapsesPage() {
           message: userMessage,
           schema: currentSchema,
           history: turns.map(t => ({ role: t.role === 'user' ? 'user' : 'assistant', text: t.text })),
-          model_tier: 'sonnet',
+          model_tier: modelTier,
           uuid,
         }),
       });
@@ -154,22 +186,26 @@ export default function SynapsesPage() {
 
       const modelResponse = chatData.response || '';
 
-      // Step 3: Ingest model response into local surface — synapse voice
-      if (localDB && modelResponse) {
-        const modelIngested = await ingest(modelResponse, localDB, localTick, 'synapse');
+      // Parse tags BEFORE display or ingestion
+      const { clean, imagines, programs } = parseTags(modelResponse);
+
+      // Step 3: Ingest CLEAN response into local surface — no tag pollution
+      if (localDB && clean) {
+        const modelIngested = await ingest(clean, localDB, localTick, 'synapse');
         setLocalTick(prev => prev + 1);
 
-        // Update V(t) with blended voice
         const blended = localV.map((v, i) => (v + modelIngested.v[i]) / 2);
         setCurrentV(blended);
       }
 
-      // Add assistant turn
+      // Add assistant turn — clean text, tags routed to renderers
       setTurns((prev) => [
         ...prev,
         {
           role: 'assistant',
-          text: modelResponse,
+          text: clean,
+          imagination: imagines,
+          programs: programs,
           v: [...localV],
           register,
           model: chatData.model,
@@ -209,22 +245,10 @@ export default function SynapsesPage() {
     }
   }
 
-  // Position nodes in a circular layout
-  function nodePositions(nodeList) {
-    const n = nodeList.length;
-    if (n === 0) return [];
-    const cx = 50, cy = 50, radius = 38;
-    return nodeList.map((node, i) => {
-      const angle = (2 * Math.PI * i) / n - Math.PI / 2;
-      return {
-        ...node,
-        x: cx + radius * Math.cos(angle),
-        y: cy + radius * Math.sin(angle),
-      };
-    });
-  }
-
-  const positioned = nodePositions(nodes);
+  // Collect programs from all turns
+  const allPrograms = turns
+    .filter(t => t.programs && t.programs.length > 0)
+    .flatMap(t => t.programs);
 
   // Auth gate
   if (!authChecked) {
@@ -260,79 +284,14 @@ export default function SynapsesPage() {
       {/* Teams Panel */}
       <TeamsPanel uuid={uuid} />
 
-      {/* Torus Landscape */}
-      <div style={{
-        flex: 1,
-        position: 'relative',
-        borderBottom: '1px solid #1a1a2e',
-        minHeight: 0,
-        overflow: 'hidden',
-      }}>
-        <div style={{
-          position: 'absolute',
-          top: 8,
-          left: 12,
-          fontSize: 10,
-          color: '#555',
-          letterSpacing: 1,
-          textTransform: 'uppercase',
-        }}>
-          Torus Landscape
-        </div>
-
-        {positioned.length === 0 && !error && (
-          <div style={{
-            position: 'absolute',
-            top: '50%',
-            left: '50%',
-            transform: 'translate(-50%, -50%)',
-            color: '#333',
-            fontSize: 11,
-          }}>
-            Awaiting kernel schema...
-          </div>
-        )}
-
-        {positioned.map((node) => (
-          <div
-            key={node.id}
-            title={`${node.label}${node.subgraph ? ` (${node.subgraph})` : ''}`}
-            style={{
-              position: 'absolute',
-              left: `${node.x}%`,
-              top: `${node.y}%`,
-              transform: 'translate(-50%, -50%)',
-              background: node.isShadow ? '#1a1028' : '#0c0c18',
-              border: `1px solid ${subgraphColor(node.subgraph)}`,
-              borderRadius: 4,
-              padding: '4px 8px',
-              fontSize: 10,
-              color: subgraphColor(node.subgraph),
-              whiteSpace: 'nowrap',
-              opacity: node.isShadow ? 0.5 : 0.9,
-              boxShadow: `0 0 8px ${subgraphColor(node.subgraph)}22`,
-              cursor: 'default',
-              maxWidth: 120,
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-            }}
-          >
-            {node.label}
-          </div>
-        ))}
-
+      {/* 3D Workspace */}
+      <div style={{ flex: 1, borderBottom: '1px solid #1a1a2e', minHeight: 0, position: 'relative' }}>
+        <TorusSpace nodes={nodes} programs={allPrograms} />
         {error && (
           <div style={{
-            position: 'absolute',
-            bottom: 8,
-            left: 12,
-            right: 12,
-            color: '#e84040',
-            fontSize: 10,
-            background: '#1a0808',
-            padding: '4px 8px',
-            borderRadius: 3,
-            border: '1px solid #e8404033',
+            position: 'absolute', bottom: 8, left: 12, right: 12,
+            color: '#e84040', fontSize: 10, background: '#1a0808',
+            padding: '4px 8px', borderRadius: 3, border: '1px solid #e8404033',
           }}>
             {error}
           </div>
