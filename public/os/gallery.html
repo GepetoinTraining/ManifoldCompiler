@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ManifoldOS — Component Gallery</title>
+  <link rel="stylesheet" href="manifold.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <style>
+    body { overflow: auto; padding: 24px; background: var(--bg); }
+    .gallery { max-width: 1200px; margin: 0 auto; }
+    .gallery h1 { color: var(--text-bright); font-size: 18px; margin-bottom: 8px; }
+    .gallery .subtitle { color: var(--text-dim); font-size: 12px; margin-bottom: 32px; }
+    .component-row {
+      display: grid;
+      grid-template-columns: 100px 1fr;
+      gap: 16px;
+      margin-bottom: 24px;
+      padding: 16px;
+      background: var(--bg-surface);
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      align-items: start;
+    }
+    .component-meta {
+      font-size: 11px;
+    }
+    .component-meta .prime {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--text-bright);
+    }
+    .component-meta .name {
+      color: var(--text-dim);
+      margin-top: 2px;
+    }
+    .component-meta .addr {
+      color: #4a6aee;
+      font-size: 10px;
+      margin-top: 4px;
+    }
+    .component-preview {
+      min-height: 40px;
+    }
+    .section-header {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+      color: var(--text-dim);
+      margin: 32px 0 16px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .composite-demo {
+      padding: 16px;
+      background: var(--bg-surface);
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      margin-bottom: 16px;
+    }
+    .composite-demo .label {
+      font-size: 10px;
+      color: var(--text-dim);
+      margin-bottom: 8px;
+    }
+  </style>
+</head>
+<body>
+
+<div class="gallery">
+  <h1>ManifoldOS — Component Gallery</h1>
+  <div class="subtitle">28 primitives, prime-addressed c2→c29. Each component rendered live from primitives.js</div>
+
+  <div id="primitives"></div>
+
+  <div class="section-header">Composite Decomposition</div>
+  <div id="composites"></div>
+</div>
+
+<script type="module">
+import { PRIMITIVES, decompose, lightToColor } from './primitives.js';
+
+const names = {
+  2: 'inputs', 3: 'cards', 4: 'buttons', 5: 'calendars', 6: 'forms',
+  7: 'modals', 8: 'toggles', 9: 'grids', 10: 'datepickers', 11: 'labels',
+  12: 'toolbars', 13: 'overlays', 14: 'prompts', 15: 'timelines',
+  16: 'sliders', 17: 'canvases', 18: 'tables', 19: 'alerts',
+  20: 'schedulers', 21: 'panels', 22: 'searches', 23: 'charts',
+  24: 'accordions', 25: 'planners', 26: 'dropdowns', 27: 'dashboards',
+  28: 'confirms', 29: 'spaces',
+};
+
+// Sample data for each primitive
+const sampleData = {
+  2:  { label: 'Project name', placeholder: 'Enter name...', type: 'text' },
+  3:  { title: 'ManifoldOS', light: 30, footer: 'mass: 1.5 · spin: 0.05' },
+  4:  { label: 'Create Star', variant: 'primary' },
+  5:  { month: 'April 2026', deadlines: [
+        { date: '2026-04-02', name: 'Wire REST routes', overdue: false },
+        { date: '2026-04-01', name: 'Old task', overdue: true },
+      ]},
+  6:  {}, // forms render their own shape picker
+  7:  null, // skip modal — it overlays everything
+  8:  { label: 'Cyclic pipeline', checked: true },
+  9:  { cols: 3, _fillGrid: true },
+  10: { label: 'Deadline', value: '2026-04-15T23:59' },
+  11: { text: 'star · class F', variant: '' },
+  12: { items: [{label:'File',active:true}, 'Edit', 'View', 'Tools'], right: ['⚙', '?'] },
+  13: null, // skip overlay
+  14: { text: 'Context:', placeholder: 'Why are these connected?' },
+  15: { items: [
+        { label: 'Wake cycle', light: 6 },
+        { label: 'Build workspace', light: 20 },
+        { label: 'Ship UI', light: 50 },
+      ]},
+  16: { label: 'Resolution', min: 4, max: 64, value: 16 },
+  17: { width: 300, height: 100 },
+  18: { headers: ['Name', 'Type', 'Mass', 'Light'],
+        rows: [
+          ['ManifoldOS', 'star', '1.50', '0'],
+          ['Workspace UI', 'planet', '0.003', '12'],
+          ['Drug Prediction', 'gas_giant', '0.01', '0'],
+        ]},
+  19: { message: 'Moon "Wire REST routes" is overdue', type: 'warning' },
+  20: { title: 'This Week', events: [
+        { day: 0, hour: 9, name: 'Wake cycle', duration: 1, light: 15 },
+        { day: 0, hour: 11, name: 'Build UI', duration: 3, light: 30 },
+        { day: 1, hour: 10, name: 'Pipeline work', duration: 2, light: 50 },
+        { day: 2, hour: 14, name: 'Review', duration: 1, light: 20 },
+        { day: 3, hour: 9, name: 'Deploy', duration: 2, light: 70 },
+        { day: 4, hour: 13, name: 'Dream cycle', duration: 1, light: 10 },
+      ]},
+  21: { title: 'Info Panel', glass: true, content: '<div style="padding:8px; font-size:11px;">ManifoldOS<br><span style="color:var(--text-dim)">36 tools · port 3141 · mass 101.5</span><br><br><span style="font-size:10px; color:var(--text-dim)">Stars: 2 · Planets: 3 · Moons: 4<br>Overdue: 0 · Inbox: 1 unread</span></div>' },
+  22: { placeholder: 'Search workspace...' },
+  23: null, // charts rendered separately below
+  24: { sections: [
+        { title: 'Architecture', content: 'Kernel → Engine → Pipeline → Programs → Shell' },
+        { title: 'Physics', content: 'Mass from content, spin from activity, Kepler orbits' },
+        { title: 'Color', content: 'Wavelength from light value. Inverse: more light = cooler.' },
+      ]},
+  25: { title: 'Sprint 1 — Workspace', lanes: [
+        { name: 'To Do', items: [
+          { name: 'Mobile gestures', light: 20 },
+          { name: 'Turso cloud sync', light: 35 },
+        ]},
+        { name: 'In Progress', items: [
+          { name: 'UI gallery', light: 50, deadline: 'Apr 1' },
+          { name: 'Camera controls', light: 30 },
+        ]},
+        { name: 'Done', items: [
+          { name: 'MCP tools (36)', light: 70 },
+          { name: 'Celestial system', light: 60 },
+          { name: 'Pipeline builders', light: 45 },
+        ]},
+      ]},
+  26: { label: 'Star class', options: ['O — massive', 'B — large', 'A — medium-large', 'F — medium', 'G — standard', 'K — small', 'M — tiny'] },
+  27: { sample: true, stars: 2, planets: 5, moons: 4, mass: '101.5' },
+  28: { message: 'Delete this star system? All planets and moons will cascade.', yes: 'Delete', no: 'Cancel', danger: true },
+  29: { space_id: 1, objects: 12, name: '3D viewport renders here' },
+};
+
+// Render primitives
+const container = document.getElementById('primitives');
+for (const [prime, renderer] of Object.entries(PRIMITIVES)) {
+  const p = parseInt(prime);
+  const data = sampleData[p];
+  if (data === null) continue; // skip modal/overlay
+
+  const row = document.createElement('div');
+  row.className = 'component-row';
+
+  const meta = document.createElement('div');
+  meta.className = 'component-meta';
+  meta.innerHTML = `
+    <div class="prime">c${p}</div>
+    <div class="name">${names[p] || '?'}</div>
+    <div class="addr">${p} ${p > 2 ? (p % 2 === 0 ? '= ' + [...Array(Math.log2(p)|0)].map(()=>'2').join('×') : 'prime') : 'prime'}</div>
+    <div style="margin-top:8px; width:20px; height:20px; border-radius:50%; background:${lightToColor(p * 3)}"></div>
+  `;
+
+  const preview = document.createElement('div');
+  preview.className = 'component-preview';
+  try {
+    const el = renderer(data || {});
+    // Fill grid with sample cards
+    if (data?._fillGrid && el.classList.contains('p-grid')) {
+      for (let i = 0; i < 6; i++) {
+        const card = PRIMITIVES[3]({ title: `Item ${i+1}`, light: (i+1) * 10, footer: `light=${(i+1)*10}` });
+        el.appendChild(card);
+      }
+    }
+    preview.appendChild(el);
+  } catch(e) {
+    preview.innerHTML = `<span style="color:#ff4444">Error: ${e.message}</span>`;
+  }
+
+  row.appendChild(meta);
+  row.appendChild(preview);
+  container.appendChild(row);
+}
+
+// ── CHARTS — 6 types ──
+const chartSection = document.createElement('div');
+chartSection.className = 'section-header';
+chartSection.textContent = 'Charts (c23) — 6 types';
+container.appendChild(chartSection);
+
+const chartDemos = [
+  { type: 'bar', title: 'Mass by Type', values: [1.5, 0.003, 0.01, 0.0001, 100, 0.00001], labels: ['star','planet','giant','moon','bh','ast'], width: 350, height: 180 },
+  { type: 'line', title: 'Spin over Time', values: [0.05, 0.08, 0.1, 0.15, 0.2, 0.18, 0.22, 0.3], labels: ['t1','t2','t3','t4','t5','t6','t7','t8'], width: 350, height: 180 },
+  { type: 'pie', title: 'Object Distribution', values: [2, 5, 2, 4, 3, 1], labels: ['star','planet','giant','moon','ast','outer'], width: 300, height: 200 },
+  { type: 'area', title: 'Memory Growth', values: [10, 15, 22, 30, 28, 35, 45, 60, 58, 72], labels: [], width: 350, height: 180 },
+  { type: 'horizontal', title: 'Tool Usage', values: [42, 28, 15, 12, 8, 5], labels: ['turn','wake','memo','sketch','build','pray'], width: 350, height: 180 },
+  { type: 'radar', title: 'System Health', values: [0.9, 0.7, 0.85, 0.6, 0.95, 0.8], labels: ['uptime','memory','speed','coverage','stability','accuracy'], width: 300, height: 220 },
+];
+
+const chartGrid = document.createElement('div');
+chartGrid.style.cssText = 'display:grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap:16px; margin-bottom:32px;';
+container.appendChild(chartGrid);
+
+// Render charts after mount so canvas has dimensions
+requestAnimationFrame(() => {
+  chartDemos.forEach(cd => {
+    try {
+      const wrap = document.createElement('div');
+      wrap.className = 'component-row';
+      wrap.style.display = 'block';
+      wrap.style.padding = '8px';
+      const chart = PRIMITIVES[23](cd);
+      wrap.appendChild(chart);
+      chartGrid.appendChild(wrap);
+    } catch(e) {
+      const err = document.createElement('div');
+      err.style.cssText = 'color:#ff4444; padding:8px; font-size:11px;';
+      err.textContent = `Chart "${cd.type}" error: ${e.message}`;
+      chartGrid.appendChild(err);
+    }
+  });
+});
+
+// Render composite decomposition demos
+const composites = document.getElementById('composites');
+const demos = [
+  { addr: 6, label: 'c6 = c2 × c3 → input inside card', data: { title: 'Project Setup', light: 12, label: 'Name', placeholder: 'Enter...' } },
+  { addr: 15, label: 'c15 = c3 × c5 → card with calendar', data: { title: 'Deadlines', light: 20, month: 'April 2026', deadlines: [{date:'04-02', name:'REST routes'}, {date:'04-15', name:'ALS search'}] } },
+  { addr: 12, label: 'c12 = c2 × c2 × c3 → two inputs in card', data: { title: 'Connect', light: 6, label: 'From', placeholder: 'object...' } },
+  { addr: 21, label: 'c21 = c3 × c7 → card with modal trigger', data: { title: 'Details', light: 42 } },
+  { addr: 10, label: 'c10 = c2 × c5 → input with datepicker', data: { label: 'Deadline', value: '2026-04-15T12:00' } },
+];
+
+for (const demo of demos) {
+  const div = document.createElement('div');
+  div.className = 'composite-demo';
+  div.innerHTML = `<div class="label">${demo.label} (address=${demo.addr})</div>`;
+  try {
+    const el = decompose(demo.addr, demo.data);
+    div.appendChild(el);
+  } catch(e) {
+    div.innerHTML += `<span style="color:#ff4444">Error: ${e.message}</span>`;
+  }
+  composites.appendChild(div);
+}
+
+// Draw spectral gradient on c17 canvases
+requestAnimationFrame(() => {
+  document.querySelectorAll('.p-canvas').forEach(canvas => {
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    for (let x = 0; x < canvas.width; x++) {
+      const wl = 380 + (x / canvas.width) * 400;
+      let r=0,g=0,b=0;
+      if(wl>=380&&wl<440){r=-(wl-440)/60;b=1}else if(wl>=440&&wl<490){g=(wl-440)/50;b=1}else if(wl>=490&&wl<510){g=1;b=-(wl-510)/20}else if(wl>=510&&wl<580){r=(wl-510)/70;g=1}else if(wl>=580&&wl<645){r=1;g=-(wl-645)/65}else if(wl>=645&&wl<=780){r=1}
+      let f=1;if(wl>=380&&wl<420)f=0.3+0.7*(wl-380)/40;else if(wl>700)f=0.3+0.7*(780-wl)/80;
+      ctx.fillStyle = `rgb(${r*f*255|0},${g*f*255|0},${b*f*255|0})`;
+      ctx.fillRect(x, 0, 1, canvas.height);
+    }
+    ctx.fillStyle = '#fff'; ctx.font = '10px monospace';
+    ctx.fillText('380nm', 4, canvas.height - 4);
+    ctx.fillText('780nm', canvas.width - 40, canvas.height - 4);
+  });
+});
+
+</script>
+</body>
+</html>

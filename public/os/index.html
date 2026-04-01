@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ManifoldOS</title>
+  <link rel="stylesheet" href="manifold.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <style>
+    /* φ spacing tokens — everything derives from 8px × φⁿ */
+    :root {
+      --s0: 5px;   /* 8/φ */
+      --s1: 8px;   /* base */
+      --s2: 13px;  /* 8×φ */
+      --s3: 21px;  /* 13×φ */
+      --s4: 34px;  /* 21×φ */
+      --s5: 55px;  /* 34×φ */
+      --s6: 89px;  /* 55×φ */
+    }
+
+    .shell-top { padding: 0 var(--s2); gap: var(--s2); }
+    .shell-left { width: 233px; /* 144×φ ≈ 233 (fibonacci) */ }
+    .shell-right { width: 144px; /* fibonacci */ }
+    .shell-bottom { padding: 0 var(--s2); gap: var(--s1); height: var(--s5); }
+
+    /* Tool menu items */
+    .menu-section { padding: var(--s1) var(--s2); }
+    .menu-label {
+      font-size: 9px; text-transform: uppercase; letter-spacing: 1.5px;
+      color: var(--text-dim); margin-bottom: var(--s1); padding: var(--s0) 0;
+    }
+    .menu-item {
+      padding: var(--s0) var(--s1); margin: 1px 0; border-radius: 4px;
+      font-size: 11px; color: var(--text-dim); cursor: pointer;
+      transition: all 0.15s; display: flex; align-items: center; gap: var(--s1);
+    }
+    .menu-item:hover { background: var(--bg-raised); color: var(--text-bright); }
+    .menu-item.active { background: var(--bg-raised); color: var(--text-bright); border-left: 2px solid #5577cc; }
+    .menu-icon { width: 14px; text-align: center; font-size: 12px; }
+
+    /* Right panel info rows */
+    .info-row {
+      display: flex; justify-content: space-between;
+      padding: var(--s0) 0; font-size: 11px;
+      border-bottom: 1px solid rgba(42,42,62,0.3);
+    }
+    .info-key { color: var(--text-dim); }
+    .info-val { color: var(--text); font-family: var(--font); }
+
+    /* Object tooltip on hover */
+    .obj-tooltip {
+      position: absolute; pointer-events: none; z-index: 100;
+      background: rgba(12,12,20,0.9); backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,0.06); border-radius: 6px;
+      padding: var(--s1) var(--s2); font-size: 10px; color: var(--text);
+      display: none; white-space: nowrap;
+    }
+
+    /* Camera mode indicator */
+    .cam-badge {
+      font-size: 10px; color: var(--text-dim); cursor: pointer;
+      padding: 2px var(--s1); border-radius: 3px; border: 1px solid var(--border);
+      transition: all 0.15s; user-select: none;
+    }
+    .cam-badge:hover { color: var(--text-bright); border-color: #4a4a8e; }
+  </style>
+</head>
+<body>
+<div id="app"></div>
+
+<script type="module">
+import { PRIMITIVES, decompose, lightToColor, wavelengthToRGB, computeReceipt } from './primitives.js';
+import { syncSpaces, syncScene, syncStatus, getPref, setPref, put, get, getAll } from './localdb.js';
+
+// ================================================================
+// TP — Where things live. The program.
+// ================================================================
+
+const TP = {
+  api: 'http://localhost:3141',
+  uuid: 'soul-seed-1',
+
+  // Resolve an address → data
+  async resolve(address) {
+    const r = await fetch(`${this.api}${address}`, { headers: { 'Content-Type': 'application/json' } });
+    const d = await r.json();
+    return d.O;
+  },
+
+  post(address, body) {
+    return fetch(`${this.api}${address}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(r => r.json()).then(d => d.O);
+  },
+
+  // Shell layout addresses
+  addresses: {
+    spaces:  () => `/api/space/list?uuid=${TP.uuid}`,
+    scene:   (id, res) => `/api/space/scene?uuid=${TP.uuid}&space_id=${id}&resolution=${res || 16}`,
+    status:  () => `/api/status`,
+  },
+};
+
+
+// ================================================================
+// MF — Decompose shell → primitives → DOM
+// ================================================================
+
+// φ constants
+const PHI = 1.618033988749895;
+const FIB = [1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233];
+
+// State
+let state = { spaces: [], spaceId: null, scene: null };
+let three = { scene: null, camera: null, renderer: null, pivot: null, objects: {}, labels: null };
+let cam = { mode: 'anchor', rX: 0.3, rY: 0.6, panX: 0, panY: 0, dist: 25 };
+
+// ================================================================
+// BOOT — The MF forward pass
+// ================================================================
+
+async function boot() {
+  const app = document.getElementById('app');
+  app.innerHTML = '';
+
+  // ── I: fetch inputs (through local cache) ──
+  const [spaces, status] = await Promise.all([
+    syncSpaces(TP.api, TP.uuid),
+    syncStatus(TP.api),
+  ]);
+  state.spaces = spaces || [];
+
+  // Restore last viewed space or pick first with objects
+  const lastSpace = await getPref('lastSpaceId', null);
+  state.spaceId = lastSpace || state.spaces.find(s => s.object_count > 0)?.space_id || state.spaces[0]?.space_id || 1;
+
+  const scene = await syncScene(TP.api, TP.uuid, state.spaceId, 16);
+  state.scene = scene;
+
+  // ── K: build the shell (layout constants) ──
+  const shell = document.createElement('div');
+  shell.className = 'manifoldos';
+
+  // TOP BAR
+  const top = document.createElement('div');
+  top.className = 'shell-top';
+  top.innerHTML = `
+    <div class="shell-burger shell-burger-left" title="Toggle tools">&#9776;</div>
+    <div style="flex:1"></div>
+    <div class="cam-badge" id="cam-mode" title="Toggle camera">&#9875; anchor</div>
+    <div class="shell-datetime" id="clock"></div>
+    <div style="flex:1"></div>
+    <div class="shell-burger shell-burger-right" title="Toggle info">&#9776;</div>
+  `;
+  shell.appendChild(top);
+
+  // MAIN: left | canvas | right
+  const main = document.createElement('div');
+  main.className = 'shell-main';
+
+  // LEFT — tool menu
+  const left = document.createElement('div');
+  left.className = 'shell-left';
+  left.innerHTML = buildLeftMenu(state.spaces, state.spaceId);
+  main.appendChild(left);
+
+  // CANVAS
+  const canvas = document.createElement('div');
+  canvas.className = 'shell-canvas';
+  const tooltip = document.createElement('div');
+  tooltip.className = 'obj-tooltip';
+  canvas.appendChild(tooltip);
+  main.appendChild(canvas);
+
+  // RIGHT — info panel
+  const right = document.createElement('div');
+  right.className = 'shell-right';
+  right.innerHTML = buildRightPanel(scene, status);
+  main.appendChild(right);
+
+  shell.appendChild(main);
+
+  // BOTTOM — meeps
+  const bottom = document.createElement('div');
+  bottom.className = 'shell-bottom';
+  bottom.innerHTML = buildMeeps();
+  shell.appendChild(bottom);
+
+  app.appendChild(shell);
+
+  // ── x: wire interactions ──
+  wireTopBar(top, left, right);
+  wireClock();
+  wireLeftMenu(left);
+  initThreeViewport(canvas, tooltip);
+  if (scene) renderCelestials(scene);
+  wireCanvasInteractions(canvas, tooltip);
+  animate();
+
+  // Receipt
+  const R = computeReceipt(state.spaceId, scene?.object_count || 0, 'boot');
+  console.log(`ManifoldOS booted. Space ${state.spaceId}, ${scene?.object_count || 0} objects. R=${R}`);
+}
+
+
+// ================================================================
+// LEFT MENU — Tool panel
+// ================================================================
+
+function buildLeftMenu(spaces, activeId) {
+  const tools = [
+    { icon: '&#9733;', label: 'Projects',   action: 'projects' },
+    { icon: '&#9998;', label: 'Sketch',     action: 'sketch' },
+    { icon: '&#9881;', label: 'Builders',   action: 'builders' },
+    { icon: '&#9776;', label: 'Documents',  action: 'docs' },
+    { icon: '&#8635;', label: 'Calendar',   action: 'calendar' },
+    { icon: '&#8646;', label: 'Connect',    action: 'connect' },
+    { icon: '&#9673;', label: 'Color',      action: 'color' },
+    { icon: '&#9744;', label: 'Sources',    action: 'sources' },
+    { icon: '&#9993;', label: 'Inbox',      action: 'inbox' },
+  ];
+
+  return `
+    <div class="menu-section">
+      <div class="menu-label">Spaces</div>
+      ${spaces.map(s => `
+        <div class="menu-item ${s.space_id === activeId ? 'active' : ''}" data-action="space" data-id="${s.space_id}">
+          <span class="menu-icon">${s.space_id}</span>
+          <span>${s.name}</span>
+          <span style="margin-left:auto; font-size:9px; color:var(--text-dim);">${s.object_count}</span>
+        </div>
+      `).join('')}
+    </div>
+    <div class="menu-section">
+      <div class="menu-label">Tools</div>
+      ${tools.map(t => `
+        <div class="menu-item" data-action="${t.action}">
+          <span class="menu-icon">${t.icon}</span>
+          <span>${t.label}</span>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+
+// ================================================================
+// RIGHT PANEL — Info
+// ================================================================
+
+function buildRightPanel(scene, status) {
+  if (!scene) return '<div class="menu-section"><div class="menu-label">No space loaded</div></div>';
+
+  const celestial = scene.celestial || {};
+  const overdue = scene.overdue || [];
+
+  return `
+    <div class="menu-section">
+      <div class="menu-label">Space</div>
+      <div class="info-row"><span class="info-key">objects</span><span class="info-val">${scene.object_count}</span></div>
+      <div class="info-row"><span class="info-key">mass</span><span class="info-val">${scene.total_mass?.toFixed(2)}</span></div>
+      <div class="info-row"><span class="info-key">light</span><span class="info-val">${scene.total_light}</span></div>
+      ${Object.entries(celestial).map(([k,v]) =>
+        `<div class="info-row"><span class="info-key">${k}</span><span class="info-val">${v}</span></div>`
+      ).join('')}
+    </div>
+    ${overdue.length ? `
+      <div class="menu-section">
+        <div class="menu-label" style="color:#ee6644;">Overdue</div>
+        ${overdue.map(o => `<div style="font-size:10px; padding:2px 0; color:#dd8866;">${o.name}</div>`).join('')}
+      </div>
+    ` : ''}
+    <div class="menu-section" id="obj-info">
+      <div class="menu-label">Select an object</div>
+    </div>
+  `;
+}
+
+function showObjectDetail(obj) {
+  const panel = document.getElementById('obj-info');
+  if (!panel) return;
+  const color = lightToColor(obj.light || 0);
+
+  // Find children (moons, planets, asteroids orbiting this object)
+  const children = (state.scene?.objects || []).filter(o => o.parent_id === obj.id);
+  const moons = children.filter(o => o.celestial_type === 'moon');
+  const planets = children.filter(o => o.celestial_type === 'planet');
+  const giants = children.filter(o => o.celestial_type === 'gas_giant');
+  const asteroids = children.filter(o => o.celestial_type === 'asteroid');
+  const allChildren = [...planets, ...giants, ...moons, ...asteroids];
+
+  panel.innerHTML = `
+    <div class="menu-label" style="border-left:3px solid ${color}; padding-left:8px;">${obj.name}</div>
+    <div class="info-row"><span class="info-key">type</span><span class="info-val">${obj.celestial_type || '—'}</span></div>
+    ${obj.star_class ? `<div class="info-row"><span class="info-key">class</span><span class="info-val">${obj.star_class}</span></div>` : ''}
+    <div class="info-row"><span class="info-key">mass</span><span class="info-val">${obj.mass?.toFixed(4)}</span></div>
+    <div class="info-row"><span class="info-key">spin</span><span class="info-val">${obj.spin?.toFixed(3)}</span></div>
+    <div class="info-row"><span class="info-key">light</span><span class="info-val">${obj.light}</span></div>
+    <div class="info-row"><span class="info-key">orbit T</span><span class="info-val">${obj.orbital_period?.toFixed(2) || '—'}</span></div>
+    ${obj.deadline ? `<div class="info-row"><span class="info-key">deadline</span><span class="info-val" style="color:#ee9944;">${obj.deadline.slice(0,10)}</span></div>` : ''}
+    ${allChildren.length ? `
+      <div style="margin-top:var(--s2);">
+        <div class="menu-label">Orbiting (${allChildren.length})</div>
+        ${allChildren.map(c => {
+          const cc = lightToColor(c.light || 0);
+          const icon = { planet:'&#9679;', gas_giant:'&#9672;', moon:'&#9676;', asteroid:'&#183;' }[c.celestial_type] || '&#9675;';
+          const dl = c.deadline ? `<span style="font-size:8px; color:#ee9944; margin-left:4px;">${c.deadline.slice(5,10)}</span>` : '';
+          return `<div class="menu-item obj-child" data-id="${c.id}" style="border-left:2px solid ${cc}; margin-left:0; padding-left:var(--s1);">
+            <span style="font-size:10px;">${icon}</span>
+            <span style="font-size:10px;">${c.name}</span>${dl}
+          </div>`;
+        }).join('')}
+      </div>
+    ` : ''}
+    ${obj.notes?.length ? `
+      <div style="margin-top:var(--s2);">
+        <div class="menu-label">Notes</div>
+        ${obj.notes.slice(-3).map(n =>
+          `<div style="font-size:9px; padding:3px 0; border-left:2px solid var(--border); padding-left:6px; margin:2px 0; color:var(--text-dim);">[${n.author}] ${n.text.slice(0,50)}</div>`
+        ).join('')}
+      </div>
+    ` : ''}
+    ${obj.completed ? `
+      <div style="margin-top:var(--s2); padding:var(--s1); background:rgba(68,187,204,0.08); border-left:3px solid #44bbcc; border-radius:4px;">
+        <div style="font-size:9px; color:#44bbcc; text-transform:uppercase; letter-spacing:0.5px;">Completed ${obj.completed_at?.slice(0,10) || ''}</div>
+        <div style="font-size:10px; margin-top:4px; color:var(--text);">${obj.completion_summary || ''}</div>
+        ${obj.deliverables?.length ? `
+          <div style="margin-top:4px;">
+            ${obj.deliverables.map(d => `<div style="font-size:9px; color:var(--text-dim);">[${d.type}] ${d.name}</div>`).join('')}
+          </div>
+        ` : ''}
+      </div>
+    ` : `
+      ${['planet','moon','asteroid','interstellar','gas_giant'].includes(obj.celestial_type) ? `
+        <button class="p-btn primary complete-btn" data-id="${obj.id}" style="width:100%; margin-top:var(--s2); font-size:10px;">Mark Complete</button>
+      ` : ''}
+    `}
+    <div style="font-size:8px; color:var(--text-dim); margin-top:var(--s2);">${obj.id}</div>
+  `;
+
+  // Wire child clicks
+  panel.querySelectorAll('.obj-child').forEach(el => {
+    el.addEventListener('click', () => {
+      const childId = el.dataset.id;
+      const child = state.scene.objects.find(o => o.id === childId);
+      if (child) showObjectDetail(child);
+    });
+  });
+
+  // Wire complete button
+  const completeBtn = panel.querySelector('.complete-btn');
+  if (completeBtn) {
+    completeBtn.addEventListener('click', async () => {
+      const summary = prompt('What happened to complete this task?');
+      if (!summary) return;
+      const delInput = prompt('Deliverables (comma-separated, or empty):');
+      const deliverables = delInput ? delInput.split(',').map(d => ({ name: d.trim(), type: 'other' })) : [];
+
+      await TP.post('/api/object/complete', {
+        uuid: TP.uuid,
+        space_id: state.spaceId,
+        object_id: obj.id,
+        summary,
+        deliverables,
+      });
+
+      // Reload scene and refresh detail
+      state.scene = await syncScene(TP.api, TP.uuid, state.spaceId, 16);
+      const updated = state.scene.objects.find(o => o.id === obj.id);
+      if (updated) showObjectDetail(updated);
+      renderCelestials(state.scene);
+    });
+  }
+}
+
+
+// ================================================================
+// MEEPS
+// ================================================================
+
+function buildMeeps() {
+  function meepDot(initial, wl, title) {
+    const [r,g,b] = wavelengthToRGB(wl);
+    return `<div class="meep" style="background:rgb(${r},${g},${b})" title="${title}">${initial}</div>`;
+  }
+  return `
+    <span style="font-size:9px; color:var(--text-dim); letter-spacing:1px; margin-right:var(--s1);">MEEPS</span>
+    ${meepDot('P', 650, 'Pedro')}
+    ${meepDot('C', 460, 'Claude')}
+    <div style="flex:1"></div>
+    <span style="font-size:9px; color:var(--text-dim);" id="receipt"></span>
+  `;
+}
+
+
+// ================================================================
+// WIRING — Interactions
+// ================================================================
+
+function wireTopBar(top, left, right) {
+  top.querySelector('.shell-burger-left').onclick = () => left.classList.toggle('collapsed');
+  top.querySelector('.shell-burger-right').onclick = () => right.classList.toggle('collapsed');
+  document.getElementById('cam-mode').onclick = () => {
+    const btn = document.getElementById('cam-mode');
+    if (cam.mode === 'anchor') {
+      cam.mode = 'nav'; cam.rX = 1.55; cam.rY = 0; cam.panX = 0; cam.panY = 0; cam.dist = 40;
+      if (three.labels) three.labels.visible = true;
+      btn.innerHTML = '&#9650; nav';
+    } else {
+      cam.mode = 'anchor'; cam.rX = 0.3; cam.dist = 25;
+      if (three.labels) three.labels.visible = false;
+      btn.innerHTML = '&#9875; anchor';
+    }
+    updateCamera();
+  };
+}
+
+function wireClock() {
+  const fmt = { weekday:'short', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit' };
+  const update = () => { const el = document.getElementById('clock'); if (el) el.textContent = new Date().toLocaleString('en-US', fmt); };
+  update(); setInterval(update, 1000);
+}
+
+function wireLeftMenu(left) {
+  left.addEventListener('click', async (e) => {
+    const item = e.target.closest('.menu-item');
+    if (!item) return;
+    const action = item.dataset.action;
+    if (action === 'space') {
+      const id = parseInt(item.dataset.id);
+      state.spaceId = id;
+      await setPref('lastSpaceId', id);
+      state.scene = await syncScene(TP.api, TP.uuid, id, 16);
+      renderCelestials(state.scene);
+      left.querySelectorAll('.menu-item[data-action="space"]').forEach(m => m.classList.remove('active'));
+      item.classList.add('active');
+      document.querySelector('.shell-right').innerHTML = buildRightPanel(state.scene, null);
+    }
+  });
+}
+
+
+// ================================================================
+// THREE.JS — The viewport MF
+// ================================================================
+
+function initThreeViewport(container, tooltip) {
+  three.scene = new THREE.Scene();
+  three.scene.background = new THREE.Color(0x0a0a12);
+
+  three.camera = new THREE.PerspectiveCamera(55, container.clientWidth / container.clientHeight, 0.1, 500);
+  three.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+  three.renderer.setSize(container.clientWidth, container.clientHeight);
+  three.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  container.insertBefore(three.renderer.domElement, tooltip);
+
+  // Lighting
+  three.scene.add(new THREE.AmbientLight(0x444466, 1.0));
+  const key = new THREE.PointLight(0xffffff, 1.2, 150);
+  key.position.set(0, 20, 15);
+  three.scene.add(key);
+  const fill = new THREE.PointLight(0x334466, 0.4, 100);
+  fill.position.set(-10, -5, -10);
+  three.scene.add(fill);
+
+  // Pivot + labels + grid
+  three.pivot = new THREE.Group();
+  three.scene.add(three.pivot);
+  three.labels = new THREE.Group();
+  three.labels.visible = false;
+  three.scene.add(three.labels);
+
+  const grid = new THREE.GridHelper(40, 20, 0x1a1a3e, 0x10101e);
+  grid.position.y = -0.1;
+  three.pivot.add(grid);
+
+  updateCamera();
+
+  // Controls
+  let drag = false, px, py;
+  container.addEventListener('mousedown', e => { drag = true; px = e.clientX; py = e.clientY; });
+  container.addEventListener('mousemove', e => {
+    // Hover tooltip
+    if (!drag) {
+      const hit = raycast(e, container);
+      if (hit) {
+        tooltip.style.display = 'block';
+        tooltip.style.left = (e.clientX - container.getBoundingClientRect().left + 12) + 'px';
+        tooltip.style.top = (e.clientY - container.getBoundingClientRect().top - 8) + 'px';
+        tooltip.textContent = `${hit.name} (${hit.celestial_type || 'obj'})`;
+      } else {
+        tooltip.style.display = 'none';
+      }
+      return;
+    }
+    const dx = e.clientX - px, dy = e.clientY - py;
+    px = e.clientX; py = e.clientY;
+
+    if (cam.mode === 'nav') {
+      cam.panX -= dx * cam.dist * 0.0008;
+      cam.panY -= dy * cam.dist * 0.0008;
+    } else if (e.shiftKey || e.buttons === 4) {
+      cam.panX -= dx * cam.dist * 0.0002;
+      cam.panY += dy * cam.dist * 0.0002;
+    } else {
+      cam.rY += dx * 0.002;
+      cam.rX += dy * 0.002;
+      cam.rX = Math.max(-1.4, Math.min(1.4, cam.rX));
+    }
+    updateCamera();
+  });
+  container.addEventListener('mouseup', () => drag = false);
+  container.addEventListener('mouseleave', () => { drag = false; tooltip.style.display = 'none'; });
+  container.addEventListener('wheel', e => {
+    e.preventDefault();
+    cam.dist *= e.deltaY > 0 ? 1.04 : 0.96;
+    cam.dist = Math.max(2, Math.min(200, cam.dist));
+    updateCamera();
+  }, { passive: false });
+
+  // Double-click in nav → zoom to object → anchor
+  container.addEventListener('dblclick', e => {
+    if (cam.mode !== 'nav') return;
+    const hit = raycast(e, container);
+    if (hit) {
+      const mesh = three.objects[hit.id];
+      if (mesh) { cam.panX = mesh.position.x; cam.panY = 0; }
+    }
+    cam.mode = 'anchor'; cam.rX = 0.3; cam.dist = 12;
+    three.labels.visible = false;
+    document.getElementById('cam-mode').innerHTML = '&#9875; anchor';
+    updateCamera();
+  });
+
+  // Resize
+  const ro = new ResizeObserver(() => {
+    three.camera.aspect = container.clientWidth / container.clientHeight;
+    three.camera.updateProjectionMatrix();
+    three.renderer.setSize(container.clientWidth, container.clientHeight);
+  });
+  ro.observe(container);
+}
+
+function updateCamera() {
+  if (cam.mode === 'nav') {
+    three.camera.position.set(cam.panX, cam.dist, cam.panY + 0.01);
+    three.camera.lookAt(cam.panX, 0, cam.panY);
+  } else {
+    three.camera.position.set(
+      cam.dist * Math.sin(cam.rY) * Math.cos(cam.rX) + cam.panX,
+      cam.dist * Math.sin(cam.rX) + cam.panY,
+      cam.dist * Math.cos(cam.rY) * Math.cos(cam.rX)
+    );
+    three.camera.lookAt(cam.panX, cam.panY, 0);
+  }
+}
+
+function raycast(e, container) {
+  const rect = container.getBoundingClientRect();
+  const mouse = new THREE.Vector2(
+    ((e.clientX - rect.left) / rect.width) * 2 - 1,
+    -((e.clientY - rect.top) / rect.height) * 2 + 1
+  );
+  const rc = new THREE.Raycaster();
+  rc.setFromCamera(mouse, three.camera);
+  const hits = rc.intersectObjects(three.pivot.children, true);
+  for (const h of hits) {
+    let obj = h.object;
+    while (obj && !obj.userData?.id && obj.parent !== three.pivot) obj = obj.parent;
+    if (obj?.userData?.id) return obj.userData;
+  }
+  return null;
+}
+
+function wireCanvasInteractions(canvas, tooltip) {
+  // Left click → select
+  canvas.addEventListener('click', e => {
+    const hit = raycast(e, canvas);
+    if (hit) showObjectDetail(hit);
+  });
+
+  // Right click → context menu
+  canvas.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    document.querySelectorAll('.context-menu').forEach(m => m.remove());
+
+    const menu = document.createElement('div');
+    menu.className = 'context-menu';
+    menu.style.left = e.clientX + 'px';
+    menu.style.top = e.clientY + 'px';
+    menu.innerHTML = `
+      <div class="context-menu-item" data-action="star">&#9733; Generate Star System</div>
+      <div class="context-menu-item" data-action="task">&#9675; Generate Task</div>
+      <div class="context-menu-sep"></div>
+      <div class="context-menu-item" data-action="connect">&#8646; Connect Concepts</div>
+      <div class="context-menu-item" data-action="sketch">&#9998; Quick Sketch</div>
+      <div class="context-menu-sep"></div>
+      <div class="context-menu-item" data-action="refresh">&#8635; Refresh</div>
+    `;
+    document.body.appendChild(menu);
+
+    menu.onclick = async (ev) => {
+      const action = ev.target.dataset?.action;
+      menu.remove();
+      if (action === 'refresh') boot();
+      if (action === 'star') {
+        const name = prompt('Project name:');
+        if (name) {
+          await TP.post('/api/object/add', { uuid: TP.uuid, space_id: state.spaceId, name, celestial_type: 'star', star_class: 'G' });
+          state.scene = await syncScene(TP.api, TP.uuid, state.spaceId, 16);
+          renderCelestials(state.scene);
+        }
+      }
+      if (action === 'task') {
+        const name = prompt('Task name:');
+        if (name) {
+          const dl = prompt('Deadline (YYYY-MM-DD):');
+          await TP.post('/api/object/add', { uuid: TP.uuid, space_id: state.spaceId, name, celestial_type: 'interstellar', deadline: dl ? dl + 'T23:59:00Z' : undefined });
+          state.scene = await syncScene(TP.api, TP.uuid, state.spaceId, 16);
+          renderCelestials(state.scene);
+        }
+      }
+    };
+    setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 10);
+  });
+}
+
+
+// ================================================================
+// CELESTIALS — Render objects from scene data
+// ================================================================
+
+function celestialColor(ct, light) {
+  if (light > 0) return lightToColor(light);
+  return { star:'#ffee88', planet:'#66aaff', gas_giant:'#dd88ff', moon:'#88ddff',
+    asteroid:'#aaaaaa', black_hole:'#000000', interstellar:'#ff8844', outer:'#8888aa'
+  }[ct] || '#6666aa';
+}
+
+function makeLabel(text, color) {
+  const c = document.createElement('canvas'); c.width = 256; c.height = 48;
+  const ctx = c.getContext('2d');
+  ctx.font = '20px monospace'; ctx.fillStyle = color || '#aac'; ctx.textAlign = 'center';
+  ctx.fillText(text, 128, 32);
+  const tex = new THREE.CanvasTexture(c);
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, opacity: 0.85 });
+  const sprite = new THREE.Sprite(mat);
+  sprite.scale.set(4, 1, 1);
+  return sprite;
+}
+
+function renderCelestials(scene) {
+  // Clear
+  while (three.pivot.children.length > 1) three.pivot.remove(three.pivot.children[three.pivot.children.length - 1]); // keep grid
+  while (three.labels.children.length) three.labels.remove(three.labels.children[0]);
+  three.objects = {};
+
+  if (!scene?.objects) return;
+
+  for (const obj of scene.objects) {
+    const ct = obj.celestial_type || 'raw';
+    const color = celestialColor(ct, obj.light || 0);
+    const massScale = Math.max(0.1, Math.log(Math.max(obj.mass || 0.01, 0.01) * 100 + 1) * 0.3);
+
+    const emissive = { star:1, planet:0.5, gas_giant:0.6, moon:0.4, interstellar:0.7, asteroid:0.2 };
+    const mat = new THREE.MeshPhongMaterial({
+      color: new THREE.Color(color),
+      emissive: new THREE.Color(color),
+      emissiveIntensity: emissive[ct] || 0.3,
+      transparent: ct === 'outer' || ct === 'interstellar',
+      opacity: ct === 'outer' || ct === 'interstellar' ? 0.6 : 1,
+    });
+
+    let mesh;
+    if (ct === 'star') {
+      const r = { O:2, B:1.6, A:1.2, F:0.9, G:0.7, K:0.5, M:0.3 }[obj.star_class] || 0.7;
+      mesh = new THREE.Mesh(new THREE.SphereGeometry(r, 24, 24), mat);
+      mesh.add(new THREE.PointLight(new THREE.Color(color), 2.0, r * 15));
+      // Corona glow
+      const gc = document.createElement('canvas'); gc.width = 128; gc.height = 128;
+      const gctx = gc.getContext('2d');
+      const grad = gctx.createRadialGradient(64,64,0,64,64,64);
+      grad.addColorStop(0, color); grad.addColorStop(0.3, 'rgba(255,238,136,0.3)'); grad.addColorStop(1, 'transparent');
+      gctx.fillStyle = grad; gctx.fillRect(0,0,128,128);
+      const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(gc), transparent: true, opacity: 0.5 }));
+      glow.scale.set(r * 4, r * 4, 1);
+      mesh.add(glow);
+    } else if (ct === 'planet') {
+      mesh = new THREE.Mesh(new THREE.SphereGeometry(0.25 + massScale * 0.1, 16, 16), mat);
+    } else if (ct === 'gas_giant') {
+      mesh = new THREE.Group();
+      const r = 0.4 + massScale * 0.15;
+      mesh.add(new THREE.Mesh(new THREE.SphereGeometry(r, 16, 16), mat));
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(r * 1.4, r * 1.8, 32),
+        new THREE.MeshBasicMaterial({ color: new THREE.Color(color), side: THREE.DoubleSide, transparent: true, opacity: 0.3 })
+      );
+      ring.rotation.x = Math.PI / 2.5;
+      mesh.add(ring);
+    } else if (ct === 'moon') {
+      mesh = new THREE.Mesh(new THREE.SphereGeometry(0.1 + massScale * 0.02, 8, 8), mat);
+    } else if (ct === 'black_hole') {
+      mesh = new THREE.Group();
+      mesh.add(new THREE.Mesh(new THREE.SphereGeometry(0.8, 16, 16), new THREE.MeshBasicMaterial({ color: 0x000000 })));
+      const disk = new THREE.Mesh(
+        new THREE.RingGeometry(1.0, 2.0, 48),
+        new THREE.MeshBasicMaterial({ color: 0xff4400, side: THREE.DoubleSide, transparent: true, opacity: 0.2 })
+      );
+      disk.rotation.x = Math.PI / 3;
+      mesh.add(disk);
+    } else if (ct === 'asteroid') {
+      mesh = new THREE.Mesh(new THREE.SphereGeometry(0.06, 6, 6), mat);
+    } else if (ct === 'interstellar') {
+      mesh = new THREE.Mesh(new THREE.SphereGeometry(0.15, 8, 8), mat);
+    } else {
+      mesh = new THREE.Mesh(new THREE.SphereGeometry(0.2, 12, 12), mat);
+    }
+
+    // Position from DB
+    const pos = obj.live_position || obj.position || {};
+    const theta = (pos.theta || 0) * Math.PI / 180;
+    const orbR = obj.position?.r || 3;
+
+    if (obj.parent_id && three.objects[obj.parent_id]) {
+      const pp = three.objects[obj.parent_id].position.clone();
+      const T = obj.orbital_period || 10;
+      const phase = (Date.now() * 0.0001) / T * Math.PI * 2;
+      mesh.position.set(pp.x + orbR * Math.cos(phase), pp.y + (ct === 'moon' ? 0.3 : 0), pp.z + orbR * Math.sin(phase));
+    } else {
+      mesh.position.set(orbR * Math.cos(theta), 0, orbR * Math.sin(theta));
+    }
+
+    mesh.userData = obj;
+    three.pivot.add(mesh);
+    three.objects[obj.id] = mesh;
+
+    // Label
+    const lbl = makeLabel(obj.name, color);
+    lbl.position.copy(mesh.position);
+    lbl.position.y += (ct === 'star' ? 2.5 : ct === 'gas_giant' ? 1.5 : 0.7);
+    three.labels.add(lbl);
+  }
+
+  // Update receipt
+  const el = document.getElementById('receipt');
+  if (el) el.textContent = `R=${scene.receipt?.slice(0,8) || '—'}`;
+}
+
+
+// ================================================================
+// ANIMATION — Spin + orbit from DB values
+// ================================================================
+
+function animate() {
+  requestAnimationFrame(animate);
+  const now = Date.now() * 0.001;
+
+  for (const [id, mesh] of Object.entries(three.objects)) {
+    const ud = mesh.userData;
+    if (!ud) continue;
+    mesh.rotation.y += (ud.spin || 0) * 0.02;
+
+    if (ud.parent_id && three.objects[ud.parent_id] && ud.orbital_period > 0) {
+      const pp = three.objects[ud.parent_id].position;
+      const orbR = ud.position?.r || 2;
+      const phase = (now / ud.orbital_period) * Math.PI * 2;
+      mesh.position.set(pp.x + orbR * Math.cos(phase), pp.y + (ud.celestial_type === 'moon' ? 0.3 : 0), pp.z + orbR * Math.sin(phase));
+    }
+  }
+  three.renderer.render(three.scene, three.camera);
+}
+
+
+// ================================================================
+// BOOT
+// ================================================================
+
+// Register service worker for offline sync + Turso bridge
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/ui/sync-worker.js', { scope: '/ui/' })
+    .then(reg => console.log('sync-worker registered', reg.scope))
+    .catch(err => console.warn('sync-worker failed:', err));
+
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    if (e.data.type === 'sync-complete') {
+      const el = document.getElementById('receipt');
+      if (el) el.textContent = `synced ${new Date(e.data.ts).toLocaleTimeString()}`;
+    }
+  });
+}
+
+boot();
+
+</script>
+</body>
+</html>
